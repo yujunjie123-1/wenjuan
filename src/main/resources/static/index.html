@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>本地问卷演示填报器</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="app-shell">
+    <header class="topbar">
+        <div>
+            <h1>本地问卷演示填报器</h1>
+            <p>Excel 映射、可见浏览器、顺序执行、日志留痕</p>
+        </div>
+        <div class="status-pill" id="healthStatus">服务检查中</div>
+    </header>
+
+    <main class="workspace">
+        <section class="panel setup-panel">
+            <div class="panel-header">
+                <span class="step">1</span>
+                <h2>创建任务</h2>
+            </div>
+            <label class="field">
+                <span>问卷链接</span>
+                <input id="questionnaireUrl" type="url" placeholder="https://example.com/form">
+            </label>
+            <label class="field">
+                <span>Excel 文件</span>
+                <input id="excelFile" type="file" accept=".xlsx,.xls">
+            </label>
+            <div class="grid two">
+                <label class="field">
+                    <span>执行模式</span>
+                    <select id="executionMode">
+                        <option value="DEMO">演示模式</option>
+                        <option value="AUTO">自动模式</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span>间隔秒数</span>
+                    <input id="intervalSeconds" type="number" min="2" value="3">
+                </label>
+            </div>
+            <div class="grid two">
+                <label class="field">
+                    <span>最多行数</span>
+                    <input id="maxRows" type="number" min="1" max="50" value="5">
+                </label>
+                <label class="field checkbox-field">
+                    <input id="submitEnabled" type="checkbox">
+                    <span>允许点击提交按钮</span>
+                </label>
+            </div>
+            <div class="notice">仅用于你有权限的问卷或本地测试环境；默认只填写并截图，不点击提交。</div>
+            <button id="uploadButton" class="primary-button">上传并预览 Excel</button>
+        </section>
+
+        <section class="panel preview-panel">
+            <div class="panel-header">
+                <span class="step">2</span>
+                <h2>数据预览</h2>
+            </div>
+            <div id="workbookSummary" class="empty-state">未上传 Excel</div>
+            <div class="table-wrap">
+                <table id="previewTable"></table>
+            </div>
+        </section>
+
+        <section class="panel mapping-panel">
+            <div class="panel-header with-actions">
+                <div>
+                    <span class="step">3</span>
+                    <h2>字段映射</h2>
+                </div>
+                <button id="copyHeaderButton" class="secondary-button">列名填入题目</button>
+            </div>
+            <div class="table-wrap">
+                <table id="mappingTable">
+                    <thead>
+                    <tr>
+                        <th>Excel 列</th>
+                        <th>问卷题目</th>
+                        <th>题型</th>
+                        <th>必填</th>
+                    </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <button id="startButton" class="primary-button" disabled>开始演示</button>
+        </section>
+
+        <section class="panel logs-panel">
+            <div class="panel-header with-actions">
+                <div>
+                    <span class="step">4</span>
+                    <h2>执行日志</h2>
+                </div>
+                <button id="cancelButton" class="secondary-button" disabled>停止任务</button>
+            </div>
+            <div class="metrics">
+                <div><strong id="statusValue">未开始</strong><span>状态</span></div>
+                <div><strong id="completedValue">0</strong><span>成功</span></div>
+                <div><strong id="failedValue">0</strong><span>失败</span></div>
+            </div>
+            <div id="logList" class="log-list"></div>
+        </section>
+    </main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

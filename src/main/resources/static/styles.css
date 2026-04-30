@@ -1,0 +1,378 @@
+:root {
+    color-scheme: light;
+    --bg: #f5f7f8;
+    --panel: #ffffff;
+    --ink: #172026;
+    --muted: #65737f;
+    --line: #dce3e8;
+    --accent: #1967d2;
+    --accent-dark: #0f4fa8;
+    --success: #146c43;
+    --danger: #b42318;
+    --warn: #986900;
+    --soft-blue: #e8f0fe;
+    --soft-green: #e7f4ec;
+    --soft-red: #fdebea;
+    --soft-warn: #fff4d6;
+    font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+}
+
+.app-shell {
+    min-height: 100vh;
+}
+
+.topbar {
+    min-height: 88px;
+    padding: 18px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 1px solid var(--line);
+    background: #ffffff;
+}
+
+h1, h2, p {
+    margin: 0;
+}
+
+h1 {
+    font-size: 24px;
+    line-height: 1.25;
+    font-weight: 700;
+}
+
+.topbar p {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.status-pill {
+    min-width: 112px;
+    text-align: center;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 13px;
+    background: #f8fafc;
+    white-space: nowrap;
+}
+
+.workspace {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    grid-template-areas:
+        "setup preview"
+        "mapping mapping"
+        "logs logs";
+    gap: 16px;
+    padding: 18px;
+    max-width: 1440px;
+    margin: 0 auto;
+}
+
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+    min-width: 0;
+}
+
+.setup-panel { grid-area: setup; }
+.preview-panel { grid-area: preview; }
+.mapping-panel { grid-area: mapping; }
+.logs-panel { grid-area: logs; }
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.panel-header.with-actions {
+    justify-content: space-between;
+}
+
+.panel-header.with-actions > div {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.step {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--soft-blue);
+    color: var(--accent-dark);
+    font-weight: 700;
+    font-size: 13px;
+}
+
+h2 {
+    font-size: 18px;
+    line-height: 1.25;
+}
+
+.field {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    color: var(--muted);
+}
+
+.field input,
+.field select {
+    width: 100%;
+    min-height: 38px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--ink);
+    background: #ffffff;
+    font-size: 14px;
+}
+
+.field input:focus,
+.field select:focus {
+    outline: 2px solid rgba(25, 103, 210, 0.16);
+    border-color: var(--accent);
+}
+
+.grid.two {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.checkbox-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 23px;
+    color: var(--ink);
+}
+
+.checkbox-field input {
+    width: 16px;
+    min-height: 16px;
+}
+
+.notice {
+    border-left: 3px solid var(--warn);
+    background: var(--soft-warn);
+    color: #5b4200;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 12px;
+}
+
+button {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    min-height: 38px;
+    padding: 8px 14px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.primary-button {
+    width: 100%;
+    color: #ffffff;
+    background: var(--accent);
+}
+
+.primary-button:hover:not(:disabled) {
+    background: var(--accent-dark);
+}
+
+.secondary-button {
+    color: var(--accent-dark);
+    background: #ffffff;
+    border-color: var(--line);
+}
+
+.secondary-button:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--soft-blue);
+}
+
+.empty-state {
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    min-height: 140px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+}
+
+.table-wrap {
+    width: 100%;
+    overflow: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+th, td {
+    border-bottom: 1px solid var(--line);
+    padding: 10px;
+    text-align: left;
+    vertical-align: middle;
+}
+
+th {
+    color: #4a5965;
+    background: #f8fafc;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+td input,
+td select {
+    width: 100%;
+    min-height: 34px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+
+td.checkbox-cell {
+    text-align: center;
+}
+
+td.checkbox-cell input {
+    width: 16px;
+    height: 16px;
+}
+
+#startButton {
+    margin-top: 14px;
+    max-width: 220px;
+}
+
+.metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.metrics div {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    background: #fbfcfd;
+}
+
+.metrics strong {
+    display: block;
+    font-size: 20px;
+    line-height: 1.2;
+}
+
+.metrics span {
+    display: block;
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 4px;
+}
+
+.log-list {
+    display: grid;
+    gap: 8px;
+    max-height: 360px;
+    overflow: auto;
+}
+
+.log-item {
+    border: 1px solid var(--line);
+    border-left-width: 4px;
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: #ffffff;
+    display: grid;
+    gap: 4px;
+}
+
+.log-item.info {
+    border-left-color: var(--accent);
+}
+
+.log-item.error {
+    border-left-color: var(--danger);
+    background: var(--soft-red);
+}
+
+.log-item.warn {
+    border-left-color: var(--warn);
+    background: var(--soft-warn);
+}
+
+.log-meta {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.log-message {
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.log-link {
+    color: var(--accent-dark);
+    font-size: 13px;
+}
+
+@media (max-width: 860px) {
+    .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .workspace {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "setup"
+            "preview"
+            "mapping"
+            "logs";
+    }
+
+    .grid.two,
+    .metrics {
+        grid-template-columns: 1fr;
+    }
+
+    .checkbox-field {
+        margin-top: 0;
+    }
+}

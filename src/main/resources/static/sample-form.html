@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>样例问卷</title>
+    <style>
+        :root {
+            --line: #dce3e8;
+            --ink: #172026;
+            --muted: #65737f;
+            --accent: #1967d2;
+            font-family: "Microsoft YaHei", Arial, sans-serif;
+        }
+        body {
+            margin: 0;
+            background: #f5f7f8;
+            color: var(--ink);
+        }
+        main {
+            max-width: 760px;
+            margin: 24px auto;
+            background: #ffffff;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 24px;
+        }
+        h1 {
+            margin: 0 0 8px;
+            font-size: 24px;
+        }
+        p {
+            margin: 0 0 20px;
+            color: var(--muted);
+        }
+        fieldset {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            margin: 0 0 14px;
+            padding: 16px;
+        }
+        legend {
+            font-weight: 700;
+        }
+        label {
+            display: block;
+            margin-top: 10px;
+        }
+        input[type="text"],
+        textarea,
+        select {
+            width: 100%;
+            min-height: 38px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 14px;
+        }
+        textarea {
+            min-height: 92px;
+        }
+        button {
+            min-height: 40px;
+            border: 0;
+            border-radius: 6px;
+            color: #ffffff;
+            background: var(--accent);
+            padding: 8px 18px;
+            font-size: 15px;
+        }
+        .result {
+            display: none;
+            margin-top: 12px;
+            color: #146c43;
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>样例问卷</h1>
+    <p>用于本地演示字段映射和浏览器填写，不会向外部服务提交数据。</p>
+    <form id="sampleForm">
+        <fieldset>
+            <legend>请输入你的姓名</legend>
+            <input type="text" name="name">
+        </fieldset>
+        <fieldset>
+            <legend>你的性别</legend>
+            <label><input type="radio" name="gender" value="男"> 男</label>
+            <label><input type="radio" name="gender" value="女"> 女</label>
+        </fieldset>
+        <fieldset>
+            <legend>你的年级</legend>
+            <select name="grade">
+                <option value="">请选择</option>
+                <option>大一</option>
+                <option>大二</option>
+                <option>大三</option>
+                <option>大四</option>
+            </select>
+        </fieldset>
+        <fieldset>
+            <legend>你是否满意</legend>
+            <label><input type="radio" name="satisfaction" value="满意"> 满意</label>
+            <label><input type="radio" name="satisfaction" value="一般"> 一般</label>
+            <label><input type="radio" name="satisfaction" value="不满意"> 不满意</label>
+        </fieldset>
+        <fieldset>
+            <legend>你的建议</legend>
+            <textarea name="suggestion"></textarea>
+        </fieldset>
+        <button type="submit">提交</button>
+        <div id="result" class="result">样例表单已接收。</div>
+    </form>
+</main>
+<script>
+    document.querySelector("#sampleForm").addEventListener("submit", event => {
+        event.preventDefault();
+        document.querySelector("#result").style.display = "block";
+    });
+</script>
+</body>
+</html>
