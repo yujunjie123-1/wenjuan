@@ -66,12 +66,19 @@ async function uploadWorkbook() {
             method: "POST",
             body: form
         });
-        state.mappings = state.workbook.headers.map(header => ({
-            excelColumn: header,
-            questionTitle: "",
-            questionType: "TEXT",
-            required: true
-        }));
+        state.mappings = state.workbook.headers.map(header => {
+            const questionNumber = questionNumberPrefix(header);
+            const isQuestionColumn = questionNumber !== null;
+            return {
+                excelColumn: header,
+                excelColumns: [header],
+                questionTitle: isQuestionColumn ? header : "",
+                questionType: "TEXT",
+                valueMode: isQuestionColumn ? "ORDINAL" : "TEXT",
+                required: isQuestionColumn,
+                offset: isQuestionColumn ? questionNumber : 0
+            };
+        });
         renderWorkbook();
         renderMappings();
         els.startButton.disabled = false;
@@ -106,15 +113,28 @@ function renderMappings() {
                     ${questionTypeOption("TEXT", "填空题", mapping.questionType)}
                     ${questionTypeOption("SINGLE_CHOICE", "单选题", mapping.questionType)}
                     ${questionTypeOption("MULTIPLE_CHOICE", "多选题", mapping.questionType)}
+                    ${questionTypeOption("SCALE", "量表题", mapping.questionType)}
                     ${questionTypeOption("SELECT", "下拉题", mapping.questionType)}
                 </select>
             </td>
+            <td>
+                <select data-index="${index}" data-field="valueMode">
+                    ${valueModeOption("TEXT", "按文本/原值", mapping.valueMode)}
+                    ${valueModeOption("ORDINAL", "按序号选第 N 项", mapping.valueMode)}
+                    ${valueModeOption("MULTI_BINARY_COLUMNS", "多选拆列 0/1", mapping.valueMode)}
+                </select>
+            </td>
+            <td><input data-index="${index}" data-field="excelColumns" value="${escapeAttr((mapping.excelColumns || [mapping.excelColumn]).join(" | "))}" placeholder="多选拆列时用 | 分隔多个 Excel 列名"></td>
             <td class="checkbox-cell"><input type="checkbox" data-index="${index}" data-field="required" ${mapping.required ? "checked" : ""}></td>
         </tr>
     `).join("");
 }
 
 function questionTypeOption(value, label, current) {
+    return `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`;
+}
+
+function valueModeOption(value, label, current) {
     return `<option value="${value}" ${value === current ? "selected" : ""}>${label}</option>`;
 }
 
@@ -125,7 +145,15 @@ function updateMapping(event) {
     if (!Number.isInteger(index) || !field) {
         return;
     }
-    state.mappings[index][field] = field === "required" ? target.checked : target.value;
+    if (field === "required") {
+        state.mappings[index][field] = target.checked;
+        return;
+    }
+    if (field === "excelColumns") {
+        state.mappings[index][field] = splitColumns(target.value);
+        return;
+    }
+    state.mappings[index][field] = target.value;
 }
 
 function copyHeadersToQuestions() {
@@ -144,7 +172,14 @@ async function startTask() {
     const request = {
         workbookId: state.workbook.workbookId,
         questionnaireUrl: els.questionnaireUrl.value.trim(),
-        mappings: state.mappings.filter(mapping => mapping.questionTitle.trim()),
+        mappings: state.mappings
+            .filter(mapping => mapping.questionTitle.trim())
+            .map(mapping => ({
+                ...mapping,
+                excelColumns: mapping.valueMode === "MULTI_BINARY_COLUMNS"
+                    ? (mapping.excelColumns && mapping.excelColumns.length ? mapping.excelColumns : [mapping.excelColumn])
+                    : []
+            })),
         mode: els.executionMode.value,
         intervalSeconds: Number(els.intervalSeconds.value || 3),
         maxRows: Number(els.maxRows.value || 5),
@@ -246,6 +281,18 @@ function escapeAttr(value) {
     return escapeHtml(value).replaceAll("`", "&#096;");
 }
 
+function splitColumns(value) {
+    return String(value)
+        .split(/\s*(?:\||\n)\s*/)
+        .map(item => item.trim())
+        .filter(Boolean);
+}
+
+function questionNumberPrefix(value) {
+    const match = String(value).match(/^\s*(\d+)[.、．]\s*/);
+    return match ? Number(match[1]) : null;
+}
+
 els.uploadButton.addEventListener("click", uploadWorkbook);
 els.mappingTableBody.addEventListener("input", updateMapping);
 els.mappingTableBody.addEventListener("change", updateMapping);
@@ -254,3 +301,47 @@ els.startButton.addEventListener("click", startTask);
 els.cancelButton.addEventListener("click", cancelTask);
 
 checkHealth();
+
+window.addEventListener('load', () => {
+    fetch('/api/automation/profiles')
+        .then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(data => {
+            console.log('%c[Stealth] Loaded Automation Profiles:', data);
+        })
+        .catch(err => {
+            console.warn('[Stealth] Failed to load profiles; backend may not be ready yet', err);
+        });
+});
+
+
+// ====================== 强制启用 Stealth 模式 ======================
+console.log('%c[Debug] 强制启用 local-demo-enhanced 配置', 'color: #f59e0b; font-size: 14px');
+
+// 拦截任务提交，强制添加 automationProfileId
+const originalFetch = window.fetch;
+window.fetch = async function(url, options = {}) {
+    if (typeof url === 'string' && url.includes('/api/tasks') && options.method === 'POST') {
+        try {
+            if (!options.body || typeof options.body !== 'string') {
+                return originalFetch.call(this, url, options);
+            }
+            const body = JSON.parse(options.body);
+            // 强制使用增强配置
+            body.automationProfileId = "local-demo-enhanced";
+            options.body = JSON.stringify(body);
+            
+            console.log('%c[Stealth] 已强制启用 local-demo-enhanced 配置', 'color: #22c55e; font-weight: bold');
+        } catch(e) {
+            console.warn('[Stealth] Error while intercepting fetch', e);
+        }
+    }
+    return originalFetch.call(this, url, options);
+};
+
+// 同时在页面加载时输出提示
+window.addEventListener('load', () => {
+    console.log('%c[Stealth] Stealth 强制注入已启用 - 使用 local-demo-enhanced', 'color: #22c55e; font-size: 13px');
+});

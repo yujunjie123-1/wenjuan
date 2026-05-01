@@ -1,0 +1,59 @@
+{
+  "automationProfiles": [
+    {
+      "id": "local-demo-enhanced",
+      "enabled": true,
+      "description": "组合配置：用于本地问卷演示的多环境模拟，引用代理、浏览器环境和行为节奏配置。",
+      "proxyProfileId": "local-placeholder-proxy",
+      "fingerprintProfileId": "desktop-chrome-zh-cn",
+      "behaviorProfileId": "natural-review-speed",
+      "captchaProfileId": null
+    }
+  ],
+  "proxyProfiles": [
+    {
+      "id": "local-placeholder-proxy",
+      "enabled": true,
+      "description": "代理配置示例：占位地址，仅用于展示配置格式；实际使用前请替换为可用的内部测试代理。",
+      "server": "http://127.0.0.1:8080",
+      "servers": [
+        "http://127.0.0.1:8080"
+      ],
+      "username": null,
+      "password": null
+    }
+  ],
+  "fingerprintProfiles": [
+    {
+      "id": "desktop-chrome-zh-cn",
+      "enabled": true,
+      "description": "浏览器环境配置：模拟常见桌面 Chrome 的语言、时区、视口和请求头。",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "locale": "zh-CN",
+      "timezoneId": "Asia/Shanghai",
+      "viewportWidth": 1280,
+      "viewportHeight": 900,
+      "hardwareConcurrency": 8,
+      "deviceMemory": 8,
+      "screenWidth": 1920,
+      "screenHeight": 1080,
+      "hasTouch": false,
+      "extraHttpHeaders": {
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+      }
+    }
+  ],
+  "behaviorProfiles": [
+    {
+      "id": "natural-review-speed",
+      "enabled": true,
+      "description": "行为节奏配置：用于本地演示时放慢操作节奏，便于观察填写过程。",
+      "minDelayMillis": 800,
+      "maxDelayMillis": 2200,
+      "typeDelayMin": 30,
+      "typeDelayMax": 180,
+      "clickJitterPx": 3
+    }
+  ],
+  "captchaProfiles": []
+}

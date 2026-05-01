@@ -13,10 +13,13 @@ data class WorkbookPreview(
 
 @Serializable
 data class FieldMapping(
-    val excelColumn: String,
+    val excelColumn: String? = null,
+    val excelColumns: List<String> = emptyList(),
     val questionTitle: String,
     val questionType: QuestionType,
-    val required: Boolean = true
+    val valueMode: ValueMode = ValueMode.TEXT,
+    val required: Boolean = true,
+    val offset: Int = 0
 )
 
 @Serializable
@@ -24,7 +27,15 @@ enum class QuestionType {
     TEXT,
     SINGLE_CHOICE,
     MULTIPLE_CHOICE,
+    SCALE,
     SELECT
+}
+
+@Serializable
+enum class ValueMode {
+    TEXT,
+    ORDINAL,
+    MULTI_BINARY_COLUMNS
 }
 
 @Serializable
@@ -41,7 +52,12 @@ data class StartTaskRequest(
     val mode: ExecutionMode = ExecutionMode.DEMO,
     val intervalSeconds: Int = 3,
     val maxRows: Int? = null,
-    val submitEnabled: Boolean = false
+    val submitEnabled: Boolean = false,
+    val automationProfileId: String? = null,
+    val proxyProfileId: String? = null,
+    val fingerprintProfileId: String? = null,
+    val behaviorProfileId: String? = null,
+    val captchaProfileId: String? = null
 )
 
 @Serializable

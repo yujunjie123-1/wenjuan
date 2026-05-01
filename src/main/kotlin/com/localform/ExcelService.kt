@@ -48,6 +48,44 @@ class ExcelService(private val paths: AppPaths) {
         return parseRows(workbook.file).rows
     }
 
+    fun autoGenerateMappings(workbookId: String): List<FieldMapping> {
+        val workbook = uploads[workbookId] ?: error("Workbook not found or server was restarted.")
+        val parsed = parseRows(workbook.file)
+        val questionColumns = parsed.headers.filter { header -> header.questionNumberPrefix() != null }
+        val grouped = questionColumns.groupBy { header -> header.questionNumberPrefix() }
+
+        return questionColumns.mapNotNull { columnName ->
+            val questionNumber = columnName.questionNumberPrefix() ?: return@mapNotNull null
+            val groupedColumns = grouped[questionNumber].orEmpty()
+            if (groupedColumns.firstOrNull() != columnName) {
+                return@mapNotNull null
+            }
+
+            FieldMapping(
+                excelColumn = columnName,
+                excelColumns = groupedColumns,
+                questionTitle = columnName,
+                questionType = QuestionType.TEXT,
+                valueMode = ValueMode.ORDINAL,
+                required = false,
+                offset = questionNumber
+            )
+        }
+    }
+
+    private fun String.questionNumberPrefix(): Int? {
+        return Regex("^\\s*(\\d+)[.、．]\\s*").find(this)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    }
+
+    private fun String.isBlankOrBinary(): Boolean {
+        val normalized = trim().removeSuffix(".0").lowercase(Locale.ROOT)
+        return normalized.isBlank() || normalized == "0" || normalized == "1" ||
+            normalized == "false" || normalized == "true" ||
+            normalized == "no" || normalized == "yes" ||
+            normalized == "n" || normalized == "y" ||
+            normalized == "否" || normalized == "是"
+    }
+
     private fun parseRows(file: File): ParsedWorkbook {
         WorkbookFactory.create(file).use { workbook ->
             val sheet = workbook.getSheetAt(0) ?: error("The first worksheet is empty.")

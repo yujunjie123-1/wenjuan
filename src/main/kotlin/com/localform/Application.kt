@@ -1,5 +1,6 @@
 package com.localform
 
+import com.localform.automation.config.AutomationConfigService
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
@@ -42,8 +43,10 @@ fun Application.module() {
     paths.ensure()
 
     val excelService = ExcelService(paths)
+    // Automation enhancement - optional
+    val automationConfigService = AutomationConfigService(paths)
     val taskStore = TaskStore()
-    val runner = QuestionnaireRunner(paths, excelService, taskStore)
+    val runner = QuestionnaireRunner(paths, excelService, taskStore, automationConfigService)
 
     install(CallLogging)
     install(CORS) {
@@ -73,6 +76,10 @@ fun Application.module() {
             call.respond(HealthResponse("ok", paths.storageDir.absolutePath))
         }
 
+        get("/api/automation/profiles") {
+            call.respond(automationConfigService.load())
+        }
+
         post("/api/workbooks") {
             val multipart = call.receiveMultipart()
             var fileName = "workbook.xlsx"
@@ -96,6 +103,8 @@ fun Application.module() {
         post("/api/tasks") {
             val request = call.receive<StartTaskRequest>()
             validateStartRequest(request)
+            // Automation enhancement - optional
+            automationConfigService.resolve(request)
             val rows = excelService.loadRows(request.workbookId)
             val totalRows = (request.maxRows ?: 20).coerceIn(1, 50).coerceAtMost(rows.size)
             val task = taskStore.create(totalRows)

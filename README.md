@@ -5,7 +5,7 @@
 ## 启动
 
 ```powershell
-cd "E:\新作业\1时间\4.7-002\survey-local-demo"
+cd "E:\问卷软件制作\survey-local-demo"
 .\gradlew.bat run
 ```
 
