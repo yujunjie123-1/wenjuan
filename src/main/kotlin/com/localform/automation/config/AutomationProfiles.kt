@@ -30,7 +30,10 @@ data class ProxyProfile(
     val server: String? = null,
     val servers: List<String> = emptyList(),
     val username: String? = null,
-    val password: String? = null
+    val password: String? = null,
+    val mode: String = "ROTATING",
+    val sticky: Boolean = true,
+    val proxiesFile: String? = null
 )
 
 @Serializable

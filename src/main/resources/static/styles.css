@@ -162,6 +162,40 @@ h2 {
     gap: 10px;
 }
 
+.grid.three {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.radio-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    min-height: 38px;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--ink);
+    background: #ffffff;
+}
+
+.radio-group label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.radio-group input {
+    width: 16px;
+    min-height: 16px;
+}
+
+.ratio-field {
+    margin-bottom: 0;
+}
+
 .checkbox-field {
     display: flex;
     align-items: center;
@@ -368,6 +402,7 @@ td.checkbox-cell input {
     }
 
     .grid.two,
+    .grid.three,
     .metrics {
         grid-template-columns: 1fr;
     }

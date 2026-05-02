@@ -48,6 +48,36 @@ class ExcelService(private val paths: AppPaths) {
         return parseRows(workbook.file).rows
     }
 
+    fun loadRowsInRange(workbookId: String, start: Int, end: Int): List<Map<String, String>> {
+        val allRows = loadRows(workbookId)
+        val startIndex = (start - 1).coerceAtLeast(0)
+        val endExclusive = end.coerceAtMost(allRows.size)
+        return if (startIndex < endExclusive) allRows.subList(startIndex, endExclusive) else emptyList()
+    }
+
+    fun writeIpToRow(workbookId: String, rowIndex: Int, ip: String) {
+        val uploaded = uploads[workbookId] ?: error("Workbook not found or server was restarted.")
+        WorkbookFactory.create(uploaded.file).use { workbook ->
+            val sheet = workbook.getSheetAt(0) ?: error("The first worksheet is empty.")
+            val headerRow = sheet.firstOrNull { row -> row.anyCellText().isNotEmpty() }
+                ?: error("No header row found in the first worksheet.")
+            val headers = headerRow.mapCells()
+            val ipColumnIndex = headers.indexOf("来自IP").takeIf { it >= 0 } ?: headers.size
+            if (ipColumnIndex == headers.size) {
+                headerRow.createCell(ipColumnIndex).setCellValue("来自IP")
+            }
+
+            val targetRowNumber = headerRow.rowNum + rowIndex
+            val row = sheet.getRow(targetRowNumber) ?: sheet.createRow(targetRowNumber)
+            val cell = row.getCell(ipColumnIndex, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK)
+            cell.setCellValue(ip)
+
+            uploaded.file.outputStream().use { output ->
+                workbook.write(output)
+            }
+        }
+    }
+
     fun autoGenerateMappings(workbookId: String): List<FieldMapping> {
         val workbook = uploads[workbookId] ?: error("Workbook not found or server was restarted.")
         val parsed = parseRows(workbook.file)

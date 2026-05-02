@@ -1,83 +1,118 @@
 package com.localform.automation.fingerprint
 
 import com.localform.automation.config.AutomationRuntimeConfig
+import com.localform.automation.config.FingerprintProfile
 
 class InitScriptFactory {
+
     fun createInitScripts(automation: AutomationRuntimeConfig): List<String> {
-    if (!automation.enabled || automation.fingerprintProfile == null) {
-        // Automation enhancement - optional
-        return emptyList()
+        val profile = automation.fingerprintProfile
+        val stealthScripts = if (profile == null || !profile.enabled) {
+            listOf(basicStealthScript())
+        } else {
+            listOf(
+                basicStealthScript(),
+                canvasFingerprintScript(),
+                webglFingerprintScript(),
+                audioContextScript(),
+                fontsAndHardwareScript(profile),
+                webrtcLeakScript(),
+                clientHintsScript(profile)
+            )
+        }
+
+        return stealthScripts + createInternalMarkerScript(automation)
     }
 
-    val fp = automation.fingerprintProfile
-    val profileId = fp.id 
-
-    // === 加强版 Stealth 脚本（用于降低检测概率）===
-    val stealthScript = """
+    private fun basicStealthScript(): String = """
         (() => {
-            'use strict';
-            console.log('%c[Stealth] Anti-detection profile loaded: ${profileId}', 'color: #22c55e; font-weight: bold');
-
-            // 1. 隐藏自动化特征
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'automation', { get: () => undefined });
-
-            // 2. Plugins & MimeTypes 伪装
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => Object.create(null, {
-                    length: { value: 5 },
-                    0: { value: { name: 'Chrome PDF Plugin' } },
-                    1: { value: { name: 'Chrome PDF Viewer' } }
-                })
-            });
-            Object.defineProperty(navigator, 'mimeTypes', { get: () => [] });
-
-            // 3. Languages 伪装
-            Object.defineProperty(navigator, 'languages', { 
-                get: () => ${if (fp.locale?.startsWith("zh") == true) "['zh-CN', 'zh', 'en-US', 'en']" else "['en-US', 'en']"} 
-            });
-
-            // 4. Canvas 指纹轻度噪声
-            const canvasNoiseSeed = "${profileId}".split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-            HTMLCanvasElement.prototype.toDataURL = function(type, encoderOptions) {
-                let result = originalToDataURL.apply(this, [type, encoderOptions]);
-                if (result && result.startsWith('data:image/png')) {
-                    result = result.substring(0, result.length - 8) + 
-                            (canvasNoiseSeed % 10000).toString().padStart(4, '0');
-                }
-                return result;
-            };
-
-            // 5. WebGL 伪装
-            const getParameter = WebGLRenderingContext.prototype.getParameter;
-            WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                if (parameter === 37445) return "Google Inc. (Intel)";
-                if (parameter === 37446) return "ANGLE (Intel, Intel(R) UHD Graphics 620, OpenGL ES 3.0)";
-                return getParameter.apply(this, arguments);
-            };
-
-            // 6. AudioContext 基础伪装
-            const originalGetChannelData = AudioBuffer.prototype.getChannelData;
-            AudioBuffer.prototype.getChannelData = function(channel) {
-                const data = originalGetChannelData.apply(this, [channel]);
-                for (let i = 0; i < data.length; i += 100) {
-                    data[i] = data[i] + (Math.sin(i + canvasNoiseSeed) * 0.0001);
-                }
-                return data;
-            };
-
-            console.log('%c[Stealth] Core anti-detection scripts injected successfully', 'color: #eab308');
+            Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5].map(() => ({ name: 'Chrome PDF Plugin' })) });
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US', 'en'] });
+            window.chrome = { runtime: {}, app: {}, webstore: {} };
+            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
         })();
     """.trimIndent()
 
-    val markerScript = createInternalMarkerScript(automation);
+    private fun canvasFingerprintScript(): String = """
+        (() => {
+            const originalGetContext = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+                const ctx = originalGetContext.apply(this, [type, ...args]);
+                if (type === '2d' && ctx) {
+                    const originalFillText = ctx.fillText;
+                    ctx.fillText = function(text, x, y, maxWidth) {
+                        arguments[0] = text + ' ';
+                        return originalFillText.apply(this, arguments);
+                    };
+                }
+                return ctx;
+            };
+        })();
+    """.trimIndent()
 
-    return listOf(stealthScript, markerScript);
-}
+    private fun webglFingerprintScript(): String = """
+        (() => {
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Intel Inc.';
+                if (parameter === 37446) return 'Intel(R) UHD Graphics';
+                return getParameter.apply(this, arguments);
+            };
+        })();
+    """.trimIndent()
+
+    private fun audioContextScript(): String = """
+        (() => {
+            const originalGetChannelData = AudioBuffer.prototype.getChannelData;
+            AudioBuffer.prototype.getChannelData = function(channel) {
+                const data = originalGetChannelData.apply(this, arguments);
+                for (let i = 0; i < data.length; i += 100) data[i] += (Math.random() * 0.0001);
+                return data;
+            };
+        })();
+    """.trimIndent()
+
+    private fun fontsAndHardwareScript(profile: FingerprintProfile): String {
+        val hw = profile.hardwareConcurrency ?: 8
+        val deviceMem = profile.deviceMemory ?: 8
+        val screenWidth = profile.screenWidth ?: 1920
+        val screenHeight = profile.screenHeight ?: 1080
+        return """
+            (() => {
+                Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => $hw });
+                Object.defineProperty(navigator, 'deviceMemory', { get: () => $deviceMem });
+                Object.defineProperty(screen, 'width', { get: () => $screenWidth });
+                Object.defineProperty(screen, 'height', { get: () => $screenHeight });
+            })();
+        """.trimIndent()
+    }
+
+    private fun webrtcLeakScript(): String = """
+        (() => {
+            const originalRTCPeerConnection = window.RTCPeerConnection;
+            if (!originalRTCPeerConnection) return;
+            window.RTCPeerConnection = function(...args) {
+                const pc = new originalRTCPeerConnection(...args);
+                pc.createOffer = function() { return Promise.resolve({ sdp: '', type: 'offer' }); };
+                return pc;
+            };
+        })();
+    """.trimIndent()
+
+    private fun clientHintsScript(profile: FingerprintProfile): String {
+        val userAgent = jsString(
+            profile.userAgent
+                ?: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+        return """
+            (() => {
+                Object.defineProperty(navigator, 'userAgent', { get: () => $userAgent });
+            })();
+        """.trimIndent()
+    }
 
     private fun createInternalMarkerScript(automation: AutomationRuntimeConfig): String {
-        // Automation enhancement - optional
         return """
             (() => {
               const marker = Object.freeze({
@@ -100,7 +135,6 @@ class InitScriptFactory {
     }
 
     private fun jsString(value: String?): String {
-        // Automation enhancement - optional
         if (value == null) {
             return "null"
         }
@@ -109,6 +143,7 @@ class InitScriptFactory {
                 when (character) {
                     '\\' -> append("\\\\")
                     '"' -> append("\\\"")
+                    '\'' -> append("\\'")
                     '\n' -> append("\\n")
                     '\r' -> append("\\r")
                     '\t' -> append("\\t")

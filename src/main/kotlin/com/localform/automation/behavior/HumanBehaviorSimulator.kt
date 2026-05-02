@@ -2,98 +2,117 @@ package com.localform.automation.behavior
 
 import com.localform.automation.config.BehaviorProfile
 import com.microsoft.playwright.Locator
-import java.util.concurrent.ThreadLocalRandom
-import kotlin.math.max
-import kotlin.math.min
+import com.microsoft.playwright.Page
+import kotlin.random.Random
+import kotlin.random.nextLong
 
-class HumanBehaviorSimulator(
-    // Automation enhancement - optional
-    private val profile: BehaviorProfile
-) {
+class HumanBehaviorSimulator(private val profile: BehaviorProfile) {
+
+    private val random = Random(System.currentTimeMillis())
+
     fun delay() {
-        // Automation enhancement - optional
-        Thread.sleep(randomDelayMillis(resolveMinDelay(), resolveMaxDelay()))
+        val minDelay = resolveMinDelay()
+        val maxDelay = resolveMaxDelay()
+        val mean = (minDelay + maxDelay) / 2.0
+        val stdDev = ((maxDelay - minDelay) / 4.0).coerceAtLeast(1.0)
+        val delayMs = gaussian(mean, stdDev).toLong().coerceIn(minDelay, maxDelay)
+        Thread.sleep(delayMs)
     }
 
     fun typeWithBehavior(locator: Locator, text: String) {
-        // Automation enhancement - optional
-        delay()
-        locator.fill("")
-        text.forEach { character ->
-            // Automation enhancement - optional
-            locator.pressSequentially(character.toString())
-            Thread.sleep(randomDelayMillis(resolveTypeDelayMin(), resolveTypeDelayMax()))
+        if (text.isBlank()) {
+            return
         }
+
+        locator.click()
+        delay()
+
+        text.forEach { character ->
+            locator.press(character.toString())
+            Thread.sleep(random.nextLong(resolveTypeDelayMin()..resolveTypeDelayMax()))
+        }
+        delay()
     }
 
     fun clickWithBehavior(locator: Locator) {
-        // Automation enhancement - optional
+        locator.scrollIntoViewIfNeeded()
         delay()
-        val jitter = (profile.clickJitterPx ?: 3).coerceAtLeast(0)
-        if (jitter == 0) {
-            locator.click()
-            return
-        }
 
+        val jitter = (profile.clickJitterPx ?: 3).coerceAtLeast(0)
         val box = runCatching { locator.boundingBox() }.getOrNull()
         if (box == null || box.width <= 0.0 || box.height <= 0.0) {
-            // Automation enhancement - optional
             locator.click()
+            delay()
             return
         }
 
-        val centerX = box.width / 2.0
-        val centerY = box.height / 2.0
-        val offsetX = randomInt(-jitter, jitter).toDouble()
-        val offsetY = randomInt(-jitter, jitter).toDouble()
-        val x = clamp(centerX + offsetX, 1.0, max(1.0, box.width - 1.0))
-        val y = clamp(centerY + offsetY, 1.0, max(1.0, box.height - 1.0))
-
-        // Automation enhancement - optional
-        locator.click(
-            Locator.ClickOptions()
-                .setPosition(x, y)
-        )
-    }
-
-    private fun resolveMinDelay(): Long {
-        // Automation enhancement - optional
-        return (profile.minDelayMillis ?: 800L).coerceAtLeast(0L)
-    }
-
-    private fun resolveMaxDelay(): Long {
-        // Automation enhancement - optional
-        return (profile.maxDelayMillis ?: 2200L).coerceAtLeast(resolveMinDelay())
-    }
-
-    private fun resolveTypeDelayMin(): Long {
-        // Automation enhancement - optional
-        return (profile.typeDelayMin ?: 30L).coerceAtLeast(0L)
-    }
-
-    private fun resolveTypeDelayMax(): Long {
-        // Automation enhancement - optional
-        return (profile.typeDelayMax ?: 180L).coerceAtLeast(resolveTypeDelayMin())
-    }
-
-    private fun randomDelayMillis(minMillis: Long, maxMillis: Long): Long {
-        // Automation enhancement - optional
-        if (maxMillis <= minMillis) {
-            return minMillis
+        val offsetX = random.nextDouble(-jitter.toDouble(), jitter.toDouble())
+        val offsetY = random.nextDouble(-jitter.toDouble(), jitter.toDouble())
+        val handle = locator.elementHandle()
+        if (handle == null) {
+            locator.click()
+            delay()
+            return
         }
-        return ThreadLocalRandom.current().nextLong(minMillis, maxMillis + 1)
-    }
 
-    private fun randomInt(minValue: Int, maxValue: Int): Int {
-        // Automation enhancement - optional
-        if (maxValue <= minValue) {
-            return minValue
+        val script = """
+            async (target) => {
+                const rect = target.getBoundingClientRect();
+                const startX = Math.random() * window.innerWidth;
+                const startY = Math.random() * window.innerHeight;
+                const endX = rect.left + rect.width / 2 + $offsetX;
+                const endY = rect.top + rect.height / 2 + $offsetY;
+
+                for (let i = 0; i <= 12; i++) {
+                    const t = i / 12;
+                    const x = (1 - t) * (1 - t) * startX + 2 * (1 - t) * t * (startX + (endX - startX) * 0.4) + t * t * endX;
+                    const y = (1 - t) * (1 - t) * startY + 2 * (1 - t) * t * (startY + (endY - startY) * 0.6) + t * t * endY;
+                    window.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true }));
+                    await new Promise(resolve => setTimeout(resolve, 8));
+                }
+                target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                await new Promise(resolve => setTimeout(resolve, 12));
+                target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                target.click();
+            }
+        """.trimIndent()
+
+        runCatching {
+            locator.page().evaluate(script, handle)
+        }.getOrElse {
+            locator.click()
         }
-        return ThreadLocalRandom.current().nextInt(minValue, maxValue + 1)
+        delay()
     }
 
-    private fun clamp(value: Double, minValue: Double, maxValue: Double): Double {
-        // Automation enhancement - optional
-        return min(max(value, minValue), maxValue)
+    fun randomScroll(page: Page) {
+        val scrollAmount = random.nextInt(300, 800)
+        page.evaluate("window.scrollBy(0, $scrollAmount)")
+        delay()
+        if (random.nextBoolean()) {
+            page.evaluate("window.scrollBy(0, -${random.nextInt(100, 300)})")
+            delay()
+        }
+    }
+
+    private fun resolveMinDelay(): Long = (profile.minDelayMillis ?: 800L).coerceAtLeast(0L)
+
+    private fun resolveMaxDelay(): Long = (profile.maxDelayMillis ?: 2200L).coerceAtLeast(resolveMinDelay())
+
+    private fun resolveTypeDelayMin(): Long = (profile.typeDelayMin ?: 30L).coerceAtLeast(0L)
+
+    private fun resolveTypeDelayMax(): Long = (profile.typeDelayMax ?: 180L).coerceAtLeast(resolveTypeDelayMin())
+
+    private fun gaussian(mean: Double, stdDev: Double): Double {
+        var v1: Double
+        var v2: Double
+        var s: Double
+        do {
+            v1 = 2 * random.nextDouble() - 1
+            v2 = 2 * random.nextDouble() - 1
+            s = v1 * v1 + v2 * v2
+        } while (s >= 1 || s == 0.0)
+        val multiplier = kotlin.math.sqrt(-2.0 * kotlin.math.ln(s) / s)
+        return mean + stdDev * v1 * multiplier
     }
 }

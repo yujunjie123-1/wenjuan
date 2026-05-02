@@ -45,9 +45,70 @@
             </div>
             <div class="grid two">
                 <label class="field">
-                    <span>最多行数</span>
-                    <input id="maxRows" type="number" min="1" max="50" value="5">
+                    <span>填写区间：起始份数</span>
+                    <input id="startRow" type="number" min="1" value="1">
                 </label>
+                <label class="field">
+                    <span>填写区间：结束份数</span>
+                    <input id="endRow" type="number" min="1" placeholder="默认到最后">
+                </label>
+            </div>
+            <div class="grid two">
+                <label class="field">
+                    <span>最多行数</span>
+                    <input id="maxRows" type="number" min="1" placeholder="默认按区间全量执行">
+                </label>
+                <label class="field">
+                    <span>提交速度等级</span>
+                    <select id="speedLevel">
+                        <option value="2">2级：5-10秒</option>
+                        <option value="3">3级：10-30秒</option>
+                        <option value="4">4级：30-60秒</option>
+                        <option value="5">5级：60-120秒</option>
+                        <option value="6">6级：120-300秒</option>
+                        <option value="7">7级：180-360秒</option>
+                        <option value="8">8级：240-400秒</option>
+                        <option value="11">11级：10-60秒</option>
+                        <option value="12">12级：10-120秒</option>
+                        <option value="13">13级：10-180秒</option>
+                        <option value="14">14级：10-240秒</option>
+                        <option value="15">15级：10-300秒</option>
+                        <option value="16">16级：10-360秒</option>
+                        <option value="17">17级：10-420秒</option>
+                        <option value="21">21级：60-120秒</option>
+                        <option value="22">22级：60-180秒</option>
+                        <option value="23">23级：60-240秒</option>
+                        <option value="24">24级：60-300秒</option>
+                        <option value="25">25级：60-360秒</option>
+                        <option value="26">26级：60-420秒</option>
+                    </select>
+                </label>
+            </div>
+            <div class="field">
+                <span>是否换IP</span>
+                <div class="radio-group">
+                    <label><input type="radio" name="changeIp" value="false" checked> 否（固定当前IP）</label>
+                    <label><input type="radio" name="changeIp" value="true"> 是（使用代理池换IP）</label>
+                </div>
+            </div>
+            <div class="field">
+                <span>提交来源比例（自动保持100%）</span>
+                <div class="grid three">
+                    <label class="ratio-field">
+                        <span>手机</span>
+                        <input id="sourceRatioMobile" type="number" min="0" max="100" value="33">
+                    </label>
+                    <label class="ratio-field">
+                        <span>链接</span>
+                        <input id="sourceRatioLink" type="number" min="0" max="100" value="33">
+                    </label>
+                    <label class="ratio-field">
+                        <span>微信</span>
+                        <input id="sourceRatioWechat" type="number" min="0" max="100" value="34">
+                    </label>
+                </div>
+            </div>
+            <div class="grid two">
                 <label class="field checkbox-field">
                     <input id="submitEnabled" type="checkbox">
                     <span>允许点击提交按钮</span>

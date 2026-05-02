@@ -2,8 +2,10 @@ package com.localform
 
 import com.localform.automation.behavior.HumanBehaviorSimulator
 import com.localform.automation.browser.ContextInitializer
+import com.localform.automation.captcha.CaptchaSolverFactory
 import com.localform.automation.config.AutomationConfigService
 import com.localform.automation.config.AutomationRuntimeConfig
+import com.localform.automation.proxy.getCurrentIp
 import com.localform.automation.proxy.ProxySessionManager
 import com.microsoft.playwright.Browser
 import com.microsoft.playwright.BrowserType
@@ -43,65 +45,123 @@ class QuestionnaireRunner(
         try {
             // Automation enhancement - optional
             val automation = automationConfigService.resolve(request)
-            if (automation.proxyProfile != null) {
-                println("[DEBUG] Proxy profile detected; proxy is temporarily disabled for testing.")
+            val proxySessionManager = ProxySessionManager(automation.proxyProfile, paths)
+            val useProxy = request.changeIp && proxySessionManager.hasProxyPool()
+            val effectiveAutomation = if (useProxy) {
+                automation
+            } else {
+                automation.copy(proxyProfile = null)
             }
-            val effectiveAutomation = automation.copy(
-                proxyProfile = null
-            )
-            val rows = excelService.loadRows(request.workbookId).take(resolveRowLimit(request))
+            val allRows = excelService.loadRows(request.workbookId)
+            val start = (request.startRow ?: 1).coerceAtLeast(1)
+            val end = request.endRow?.coerceAtMost(allRows.size) ?: allRows.size
+            val rows = request.maxRows
+                ?.takeIf { it > 0 }
+                ?.let { limit -> excelService.loadRowsInRange(request.workbookId, start, end).take(limit) }
+                ?: excelService.loadRowsInRange(request.workbookId, start, end)
             val submittedMappings = request.mappings.filterNot { it.isMetadataMapping() }
             val generatedMappings = excelService.autoGenerateMappings(request.workbookId)
             val mappings = generatedMappings.ifEmpty { submittedMappings }
-            val intervalMillis = request.intervalSeconds.coerceAtLeast(2) * 1000L
-            taskStore.append(taskId, "info", "Visible browser execution started. Rows: ${rows.size}.")
+            val speedLevel = request.speedLevel ?: 2
+            if (request.changeIp && !useProxy) {
+                taskStore.append(taskId, "warn", "Change IP is enabled, but no proxies are available. Falling back to the local network.")
+            }
+            taskStore.append(taskId, "info", "Visible browser execution started. Rows: ${rows.size} (range $start-$end), speed level $speedLevel.")
 
             Playwright.create(playwrightOptions()).use { playwright ->
-                launchBrowser(playwright, effectiveAutomation).use { browser ->
+                launchBrowser(playwright, effectiveAutomation).use browserUse@{ browser ->
                     if (effectiveAutomation.enabled) {
                         // Automation enhancement - optional
-                        val proxySessionManager = ProxySessionManager(effectiveAutomation.proxyProfile)
-                        val contextInitializer = ContextInitializer(proxySessionManager)
+                        val activeProxySessionManager = if (useProxy) proxySessionManager else null
+                        val contextInitializer = ContextInitializer(activeProxySessionManager)
 
                         rows.forEachIndexed { index, row ->
                             if (taskStore.isCancelled(taskId)) {
                                 taskStore.append(taskId, "warn", "Task cancelled before row ${index + 1}.")
-                                return@use
+                                return@browserUse
                             }
 
-                            val rowNumber = index + 1
+                            val rowNumber = start + index
                             val rowKey = "$taskId-row-$rowNumber"
-                            // Automation enhancement - optional
-                            contextInitializer.createContext(browser, effectiveAutomation, rowKey).use { initializedContext ->
-                                fillRow(
-                                    taskId = taskId,
-                                    page = initializedContext.context.newPage(),
-                                    request = request,
-                                    mappings = mappings,
-                                    row = row,
-                                    rowNumber = rowNumber,
-                                    behaviorSimulator = initializedContext.behaviorSimulator
-                                )
+                            val submissionSource = chooseSubmissionSource(request)
+                            val maxRetries = 3
+                            var attempt = 0
+                            var success = false
+
+                            while (attempt < maxRetries && !success) {
+                                attempt += 1
+                                val attemptMessage = if (attempt > 1) " (retry $attempt/$maxRetries)" else ""
+                                taskStore.append(taskId, "info", "Filling row $rowNumber$attemptMessage with proxy rotation. Source: $submissionSource.")
+
+                                // Automation enhancement - optional
+                                contextInitializer.createContext(browser, effectiveAutomation, rowKey, submissionSource).use { initializedContext ->
+                                    success = fillRow(
+                                        taskId = taskId,
+                                        page = initializedContext.context.newPage(),
+                                        request = request,
+                                        automation = effectiveAutomation,
+                                        mappings = mappings,
+                                        row = row,
+                                        rowNumber = rowNumber,
+                                        behaviorSimulator = initializedContext.behaviorSimulator
+                                    )
+
+                                    if (success) {
+                                        activeProxySessionManager?.reportSuccess(rowKey)
+                                        taskStore.append(taskId, "info", "Row $rowNumber succeeded on attempt $attempt.")
+                                    } else {
+                                        activeProxySessionManager?.reportFailure(rowKey)
+                                        taskStore.append(taskId, "warn", "Row $rowNumber failed on attempt $attempt, will retry with new proxy.")
+                                        if (attempt < maxRetries) {
+                                            delay(1500)
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (success) {
+                                taskStore.recordSuccess(taskId)
+                            } else {
+                                taskStore.append(taskId, "error", "Row $rowNumber failed after $maxRetries attempts.")
+                                taskStore.recordFailure(taskId)
                             }
 
                             if (index < rows.lastIndex) {
-                                delay(intervalMillis)
+                                delay(calculateIntervalBySpeedLevel(speedLevel))
                             }
                         }
                     } else {
-                        val context = browser.newContext(
-                            Browser.NewContextOptions()
-                                .setViewportSize(1280, 900)
-                        )
-
+                        val contextInitializer = ContextInitializer()
                         rows.forEachIndexed { index, row ->
                             if (taskStore.isCancelled(taskId)) {
                                 taskStore.append(taskId, "warn", "Task cancelled before row ${index + 1}.")
-                                return@use
+                                return@browserUse
                             }
-                            fillRow(taskId, context.newPage(), request, mappings, row, index + 1, null)
+                            val rowNumber = start + index
+                            val submissionSource = chooseSubmissionSource(request)
+                            taskStore.append(taskId, "info", "Filling row $rowNumber. Source: $submissionSource.")
+                            val contextOptions = Browser.NewContextOptions()
+                                .setViewportSize(1280, 900)
+                            val finalOptions = contextInitializer.applySubmissionSourceFingerprint(contextOptions, submissionSource)
+                            val success = browser.newContext(finalOptions).use { context ->
+                                fillRow(
+                                    taskId = taskId,
+                                    page = context.newPage(),
+                                    request = request,
+                                    automation = effectiveAutomation,
+                                    mappings = mappings,
+                                    row = row,
+                                    rowNumber = rowNumber,
+                                    behaviorSimulator = null
+                                )
+                            }
+                            if (success) {
+                                taskStore.recordSuccess(taskId)
+                            } else {
+                                taskStore.recordFailure(taskId)
+                            }
                             if (index < rows.lastIndex) {
-                                delay(intervalMillis)
+                                delay(calculateIntervalBySpeedLevel(speedLevel))
                             }
                         }
                     }
@@ -153,11 +213,12 @@ class QuestionnaireRunner(
         taskId: String,
         page: Page,
         request: StartTaskRequest,
+        automation: AutomationRuntimeConfig,
         mappings: List<FieldMapping>,
         row: Map<String, String>,
         rowNumber: Int,
         behaviorSimulator: HumanBehaviorSimulator?
-    ) {
+    ): Boolean {
         try {
             val startedAtMillis = System.currentTimeMillis()
             val targetDurationMillis = targetCompletionDurationMillis(mappings)
@@ -186,6 +247,10 @@ class QuestionnaireRunner(
             waitUntilTargetDuration(page, startedAtMillis, targetDurationMillis)
             val screenshot = saveScreenshot(page, taskId, rowNumber, "filled")
             if (request.submitEnabled) {
+                val captchaSolver = CaptchaSolverFactory().create(automation)
+                if (!captchaSolver.solve(page, taskId, rowNumber)) {
+                    throw RuntimeException("Captcha solve failed or timed out.")
+                }
                 clickSubmit(page, behaviorSimulator)
                 taskStore.append(
                     taskId,
@@ -207,7 +272,9 @@ class QuestionnaireRunner(
                     row
                 )
             }
-            taskStore.recordSuccess(taskId)
+            val currentIp = page.getCurrentIp()
+            excelService.writeIpToRow(request.workbookId, rowNumber, currentIp)
+            return true
         } catch (error: Throwable) {
             val screenshot = runCatching { saveScreenshot(page, taskId, rowNumber, "error") }.getOrNull()
             taskStore.append(
@@ -219,7 +286,7 @@ class QuestionnaireRunner(
                 screenshot?.let { artifactUrl(it) },
                 row
             )
-            taskStore.recordFailure(taskId)
+            return false
         } finally {
             runCatching { page.close() }
         }
@@ -242,6 +309,49 @@ class QuestionnaireRunner(
         val remainingMillis = targetDurationMillis - elapsedMillis
         if (remainingMillis > 0) {
             page.waitForTimeout(remainingMillis.toDouble())
+        }
+    }
+
+    private fun calculateIntervalBySpeedLevel(level: Int): Long {
+        val (minSec, maxSec) = when (level) {
+            2 -> 5 to 10
+            3 -> 10 to 30
+            4 -> 30 to 60
+            5 -> 60 to 120
+            6 -> 120 to 300
+            7 -> 180 to 360
+            8 -> 240 to 400
+            11 -> 10 to 60
+            12 -> 10 to 120
+            13 -> 10 to 180
+            14 -> 10 to 240
+            15 -> 10 to 300
+            16 -> 10 to 360
+            17 -> 10 to 420
+            21 -> 60 to 120
+            22 -> 60 to 180
+            23 -> 60 to 240
+            24 -> 60 to 300
+            25 -> 60 to 360
+            26 -> 60 to 420
+            else -> 5 to 10
+        }
+        return ThreadLocalRandom.current().nextLong(minSec * 1000L, maxSec * 1000L + 1L)
+    }
+
+    private fun chooseSubmissionSource(request: StartTaskRequest): String {
+        val mobile = request.sourceRatioMobile.coerceAtLeast(0)
+        val link = request.sourceRatioLink.coerceAtLeast(0)
+        val wechat = request.sourceRatioWechat.coerceAtLeast(0)
+        val total = mobile + link + wechat
+        if (total <= 0) {
+            return "link"
+        }
+        val pick = ThreadLocalRandom.current().nextInt(total)
+        return when {
+            pick < mobile -> "mobile"
+            pick < mobile + link -> "link"
+            else -> "wechat"
         }
     }
 
@@ -884,10 +994,6 @@ class QuestionnaireRunner(
         return "/api/artifacts/$taskId/${file.name}"
     }
 
-    private fun resolveRowLimit(request: StartTaskRequest): Int {
-        val requested = request.maxRows ?: 20
-        return requested.coerceIn(1, 50)
-    }
 }
 
 fun validateStartRequest(request: StartTaskRequest) {
@@ -908,6 +1014,18 @@ fun validateStartRequest(request: StartTaskRequest) {
         }
     }
     require(request.intervalSeconds >= 2) { "Interval must be at least 2 seconds." }
+    val start = request.startRow ?: 1
+    require(start >= 1) { "Start row must be greater than 0." }
+    request.endRow?.let { end ->
+        require(end >= start) { "End row must be greater than or equal to start row." }
+    }
+    val allowedSpeedLevels = setOf(2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24, 25, 26)
+    require((request.speedLevel ?: 2) in allowedSpeedLevels) { "Speed level must be one of 2-8, 11-17, or 21-26." }
+    val sourceTotal = request.sourceRatioMobile + request.sourceRatioLink + request.sourceRatioWechat
+    require(request.sourceRatioMobile >= 0 && request.sourceRatioLink >= 0 && request.sourceRatioWechat >= 0) {
+        "Source ratios cannot be negative."
+    }
+    require(sourceTotal == 100) { "Source ratios must add up to 100." }
 }
 
 private fun String.toOrdinalOrNull(): Int? {

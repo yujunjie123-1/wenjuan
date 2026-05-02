@@ -12,6 +12,12 @@ const els = {
     executionMode: document.querySelector("#executionMode"),
     intervalSeconds: document.querySelector("#intervalSeconds"),
     maxRows: document.querySelector("#maxRows"),
+    startRow: document.querySelector("#startRow"),
+    endRow: document.querySelector("#endRow"),
+    speedLevel: document.querySelector("#speedLevel"),
+    sourceRatioMobile: document.querySelector("#sourceRatioMobile"),
+    sourceRatioLink: document.querySelector("#sourceRatioLink"),
+    sourceRatioWechat: document.querySelector("#sourceRatioWechat"),
     submitEnabled: document.querySelector("#submitEnabled"),
     uploadButton: document.querySelector("#uploadButton"),
     workbookSummary: document.querySelector("#workbookSummary"),
@@ -182,7 +188,14 @@ async function startTask() {
             })),
         mode: els.executionMode.value,
         intervalSeconds: Number(els.intervalSeconds.value || 3),
-        maxRows: Number(els.maxRows.value || 5),
+        maxRows: els.maxRows.value ? Number(els.maxRows.value) : null,
+        startRow: Number(els.startRow.value || 1),
+        endRow: els.endRow.value ? Number(els.endRow.value) : null,
+        speedLevel: Number(els.speedLevel.value || 2),
+        sourceRatioMobile: Number(els.sourceRatioMobile.value || 0),
+        sourceRatioLink: Number(els.sourceRatioLink.value || 0),
+        sourceRatioWechat: Number(els.sourceRatioWechat.value || 0),
+        changeIp: document.querySelector('input[name="changeIp"]:checked').value === "true",
         submitEnabled: els.submitEnabled.checked
     };
     if (!request.questionnaireUrl) {
@@ -191,6 +204,15 @@ async function startTask() {
     }
     if (request.mappings.length === 0) {
         alert("至少需要一条字段映射。");
+        return;
+    }
+    if (request.endRow !== null && request.endRow < request.startRow) {
+        alert("结束份数必须大于或等于起始份数。");
+        return;
+    }
+    const sourceTotal = request.sourceRatioMobile + request.sourceRatioLink + request.sourceRatioWechat;
+    if (sourceTotal !== 100) {
+        alert("提交来源比例总和必须为 100%。");
         return;
     }
 
@@ -293,6 +315,51 @@ function questionNumberPrefix(value) {
     return match ? Number(match[1]) : null;
 }
 
+// ====================== 提交来源比例自动保持100%（已修复） ======================
+function linkSourceRatios() {
+    const mobile = els.sourceRatioMobile;
+    const linkEl = els.sourceRatioLink;
+    const wechat = els.sourceRatioWechat;
+
+    const inputs = [mobile, linkEl, wechat];
+
+    function adjustOthers(changed) {
+        let m = parseFloat(mobile.value) || 0;
+        let l = parseFloat(linkEl.value) || 0;
+        let w = parseFloat(wechat.value) || 0;
+
+        const sum = m + l + w;
+        if (sum === 0) {
+            mobile.value = 33;
+            linkEl.value = 33;
+            wechat.value = 34;
+            return;
+        }
+
+        const diff = 100 - sum;
+        if (diff === 0) {
+            return;
+        }
+
+        const adjust = diff / 2;
+
+        if (changed === mobile) {
+            linkEl.value = Math.max(0, Math.round(l + adjust));
+            wechat.value = Math.max(0, Math.round(w + (diff - adjust)));
+        } else if (changed === linkEl) {
+            mobile.value = Math.max(0, Math.round(m + adjust));
+            wechat.value = Math.max(0, Math.round(w + (diff - adjust)));
+        } else {
+            mobile.value = Math.max(0, Math.round(m + adjust));
+            linkEl.value = Math.max(0, Math.round(l + (diff - adjust)));
+        }
+    }
+
+    inputs.forEach(input => {
+        input.addEventListener("input", () => adjustOthers(input));
+    });
+}
+
 els.uploadButton.addEventListener("click", uploadWorkbook);
 els.mappingTableBody.addEventListener("input", updateMapping);
 els.mappingTableBody.addEventListener("change", updateMapping);
@@ -300,6 +367,7 @@ els.copyHeaderButton.addEventListener("click", copyHeadersToQuestions);
 els.startButton.addEventListener("click", startTask);
 els.cancelButton.addEventListener("click", cancelTask);
 
+linkSourceRatios();
 checkHealth();
 
 window.addEventListener('load', () => {

@@ -106,7 +106,14 @@ fun Application.module() {
             // Automation enhancement - optional
             automationConfigService.resolve(request)
             val rows = excelService.loadRows(request.workbookId)
-            val totalRows = (request.maxRows ?: 20).coerceIn(1, 50).coerceAtMost(rows.size)
+            val start = (request.startRow ?: 1).coerceAtLeast(1)
+            val end = request.endRow?.coerceAtMost(rows.size) ?: rows.size
+            val rangeSize = (end - start + 1).coerceAtLeast(0)
+            require(rangeSize > 0) { "Selected row range is empty." }
+            val totalRows = request.maxRows
+                ?.takeIf { it > 0 }
+                ?.coerceAtMost(rangeSize)
+                ?: rangeSize
             val task = taskStore.create(totalRows)
             runner.start(task.id, request.copy(maxRows = totalRows))
             call.respond(task)
