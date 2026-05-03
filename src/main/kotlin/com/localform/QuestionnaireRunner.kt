@@ -61,8 +61,14 @@ class QuestionnaireRunner(
                 ?: excelService.loadRowsInRange(request.workbookId, start, end)
             val submittedMappings = request.mappings.filterNot { it.isMetadataMapping() }
             val generatedMappings = excelService.autoGenerateMappings(request.workbookId)
-            val mappings = generatedMappings.ifEmpty { submittedMappings }
-            val speedLevel = request.speedLevel ?: 2
+            val mappings = submittedMappings.ifEmpty { generatedMappings }
+            val speedLevel = request.speedLevel ?: 3
+            val submissionSources = generateShuffledSources(
+                mobileRatio = request.sourceRatioMobile,
+                linkRatio = request.sourceRatioLink,
+                wechatRatio = request.sourceRatioWechat,
+                totalRows = rows.size
+            )
             if (request.changeIp && !useProxy) {
                 taskStore.append(taskId, "warn", "Change IP is enabled, but no proxies are available. Falling back to the local network.")
             }
@@ -83,7 +89,13 @@ class QuestionnaireRunner(
 
                             val rowNumber = start + index
                             val rowKey = "$taskId-row-$rowNumber"
-                            val submissionSource = chooseSubmissionSource(request)
+                            val submissionSource = submissionSources[index]
+                            val rowSignature = mappings
+                                .asSequence()
+                                .mapNotNull { mapping -> mapping.excelColumn ?: mapping.excelColumns.firstOrNull() }
+                                .distinct()
+                                .take(3)
+                                .joinToString(" | ") { column -> "$column=${row[column].orEmpty()}" }
                             val maxRetries = 3
                             var attempt = 0
                             var success = false
@@ -92,6 +104,9 @@ class QuestionnaireRunner(
                                 attempt += 1
                                 val attemptMessage = if (attempt > 1) " (retry $attempt/$maxRetries)" else ""
                                 taskStore.append(taskId, "info", "Filling row $rowNumber$attemptMessage with proxy rotation. Source: $submissionSource.")
+                                if (attempt == 1 && rowSignature.isNotBlank()) {
+                                    taskStore.append(taskId, "info", "Row $rowNumber sample values: $rowSignature")
+                                }
 
                                 // Automation enhancement - optional
                                 contextInitializer.createContext(browser, effectiveAutomation, rowKey, submissionSource).use { initializedContext ->
@@ -138,7 +153,7 @@ class QuestionnaireRunner(
                                 return@browserUse
                             }
                             val rowNumber = start + index
-                            val submissionSource = chooseSubmissionSource(request)
+                            val submissionSource = submissionSources[index]
                             taskStore.append(taskId, "info", "Filling row $rowNumber. Source: $submissionSource.")
                             val contextOptions = Browser.NewContextOptions()
                                 .setViewportSize(1280, 900)
@@ -221,7 +236,13 @@ class QuestionnaireRunner(
     ): Boolean {
         try {
             val startedAtMillis = System.currentTimeMillis()
-            val targetDurationMillis = targetCompletionDurationMillis(mappings)
+            val targetDurationMillis = targetCompletionDurationMillis(request.speedLevel ?: 3)
+            val baseEstimateMs = 180_000L
+            val speedMultiplier = (targetDurationMillis.toDouble() / baseEstimateMs)
+                .coerceIn(0.12, 1.0)
+
+            behaviorSimulator?.speedMultiplier = speedMultiplier
+            taskStore.append(taskId, "info", "Row $rowNumber -> target: ${targetDurationMillis / 1000}s, speed x${"%.2f".format(speedMultiplier)}")
 
             page.navigate(
                 request.questionnaireUrl,
@@ -292,15 +313,16 @@ class QuestionnaireRunner(
         }
     }
 
-    private fun targetCompletionDurationMillis(mappings: List<FieldMapping>): Long {
-        val questionCount = mappings
-            .mapNotNull { mapping -> mapping.offset.takeIf { it > 0 } }
-            .distinct()
-            .size
-            .takeIf { it > 0 } ?: mappings.size.coerceAtLeast(1)
-        val group = (questionCount - 1) / 5
-        val minSeconds = 40 + group * 20
-        val maxSeconds = 60 + group * 20
+    private fun targetCompletionDurationMillis(speedLevel: Int): Long {
+        val (minSeconds, maxSeconds) = when (speedLevel) {
+            1 -> 60 to 90
+            2 -> 90 to 120
+            3 -> 120 to 140
+            4 -> 140 to 160
+            5 -> 160 to 180
+            6 -> 180 to 200
+            else -> 120 to 140
+        }
         return ThreadLocalRandom.current().nextLong(minSeconds * 1000L, maxSeconds * 1000L + 1L)
     }
 
@@ -314,45 +336,67 @@ class QuestionnaireRunner(
 
     private fun calculateIntervalBySpeedLevel(level: Int): Long {
         val (minSec, maxSec) = when (level) {
-            2 -> 5 to 10
-            3 -> 10 to 30
-            4 -> 30 to 60
-            5 -> 60 to 120
-            6 -> 120 to 300
-            7 -> 180 to 360
-            8 -> 240 to 400
-            11 -> 10 to 60
-            12 -> 10 to 120
-            13 -> 10 to 180
-            14 -> 10 to 240
-            15 -> 10 to 300
-            16 -> 10 to 360
-            17 -> 10 to 420
-            21 -> 60 to 120
-            22 -> 60 to 180
-            23 -> 60 to 240
-            24 -> 60 to 300
-            25 -> 60 to 360
-            26 -> 60 to 420
-            else -> 5 to 10
+            1 -> 5 to 10
+            2 -> 8 to 15
+            3 -> 10 to 20
+            4 -> 12 to 25
+            5 -> 15 to 30
+            6 -> 20 to 40
+            else -> 10 to 20
         }
         return ThreadLocalRandom.current().nextLong(minSec * 1000L, maxSec * 1000L + 1L)
     }
 
-    private fun chooseSubmissionSource(request: StartTaskRequest): String {
-        val mobile = request.sourceRatioMobile.coerceAtLeast(0)
-        val link = request.sourceRatioLink.coerceAtLeast(0)
-        val wechat = request.sourceRatioWechat.coerceAtLeast(0)
-        val total = mobile + link + wechat
-        if (total <= 0) {
-            return "link"
+    private fun generateShuffledSources(
+        mobileRatio: Int,
+        linkRatio: Int,
+        wechatRatio: Int,
+        totalRows: Int
+    ): List<String> {
+        if (totalRows <= 0) {
+            return emptyList()
         }
-        val pick = ThreadLocalRandom.current().nextInt(total)
-        return when {
-            pick < mobile -> "mobile"
-            pick < mobile + link -> "link"
-            else -> "wechat"
+
+        val ratios = listOf(
+            "mobile" to mobileRatio.coerceAtLeast(0),
+            "link" to linkRatio.coerceAtLeast(0),
+            "wechat" to wechatRatio.coerceAtLeast(0)
+        )
+        val ratioSum = ratios.sumOf { it.second }
+        if (ratioSum <= 0) {
+            return List(totalRows) { "link" }
         }
+
+        data class Allocation(
+            val source: String,
+            val baseCount: Int,
+            val remainder: Double
+        )
+
+        val rawCounts = ratios.map { (source, ratio) ->
+            val exact = ratio.toDouble() * totalRows / ratioSum.toDouble()
+            Allocation(
+                source = source,
+                baseCount = exact.toInt(),
+                remainder = exact - exact.toInt()
+            )
+        }
+
+        val remaining = totalRows - rawCounts.sumOf { it.baseCount }
+        val counts = rawCounts.associate { it.source to it.baseCount }.toMutableMap()
+        rawCounts
+            .sortedByDescending { it.remainder }
+            .take(remaining)
+            .forEach { counts[it.source] = counts.getValue(it.source) + 1 }
+
+        val sources = buildList(totalRows) {
+            repeat(counts.getOrDefault("mobile", 0)) { add("mobile") }
+            repeat(counts.getOrDefault("link", 0)) { add("link") }
+            repeat(counts.getOrDefault("wechat", 0)) { add("wechat") }
+        }.toMutableList()
+
+        sources.shuffle()
+        return sources
     }
 
     private fun resolveMappingValues(mapping: FieldMapping, row: Map<String, String>): List<String> {
@@ -985,7 +1029,12 @@ class QuestionnaireRunner(
         val taskDir = File(paths.screenshotDir, taskId).absoluteFile
         taskDir.mkdirs()
         val file = File(taskDir, "row-$rowNumber-$suffix.png").absoluteFile
-        page.screenshot(Page.ScreenshotOptions().setPath(Path.of(file.absolutePath)).setFullPage(true))
+        page.screenshot(
+            Page.ScreenshotOptions()
+                .setPath(Path.of(file.absolutePath))
+                .setFullPage(true)
+                .setTimeout(60000.0)
+        )
         return file
     }
 
@@ -1019,8 +1068,8 @@ fun validateStartRequest(request: StartTaskRequest) {
     request.endRow?.let { end ->
         require(end >= start) { "End row must be greater than or equal to start row." }
     }
-    val allowedSpeedLevels = setOf(2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24, 25, 26)
-    require((request.speedLevel ?: 2) in allowedSpeedLevels) { "Speed level must be one of 2-8, 11-17, or 21-26." }
+    val allowedSpeedLevels = setOf(1, 2, 3, 4, 5, 6)
+    require((request.speedLevel ?: 3) in allowedSpeedLevels) { "Speed level must be between 1 and 6." }
     val sourceTotal = request.sourceRatioMobile + request.sourceRatioLink + request.sourceRatioWechat
     require(request.sourceRatioMobile >= 0 && request.sourceRatioLink >= 0 && request.sourceRatioWechat >= 0) {
         "Source ratios cannot be negative."

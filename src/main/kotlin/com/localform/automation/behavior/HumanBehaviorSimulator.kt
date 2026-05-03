@@ -6,13 +6,16 @@ import com.microsoft.playwright.Page
 import kotlin.random.Random
 import kotlin.random.nextLong
 
-class HumanBehaviorSimulator(private val profile: BehaviorProfile) {
+class HumanBehaviorSimulator(
+    private val profile: BehaviorProfile,
+    var speedMultiplier: Double = 1.0
+) {
 
     private val random = Random(System.currentTimeMillis())
 
     fun delay() {
-        val minDelay = resolveMinDelay()
-        val maxDelay = resolveMaxDelay()
+        val minDelay = ((profile.minDelayMillis ?: 800L) * speedMultiplier).toLong().coerceAtLeast(30L)
+        val maxDelay = ((profile.maxDelayMillis ?: 2200L) * speedMultiplier).toLong().coerceAtLeast(minDelay + 20L)
         val mean = (minDelay + maxDelay) / 2.0
         val stdDev = ((maxDelay - minDelay) / 4.0).coerceAtLeast(1.0)
         val delayMs = gaussian(mean, stdDev).toLong().coerceIn(minDelay, maxDelay)
@@ -29,7 +32,11 @@ class HumanBehaviorSimulator(private val profile: BehaviorProfile) {
 
         text.forEach { character ->
             locator.press(character.toString())
-            Thread.sleep(random.nextLong(resolveTypeDelayMin()..resolveTypeDelayMax()))
+            val typeDelay = random.nextLong(
+                ((profile.typeDelayMin ?: 30L) * speedMultiplier).toLong().coerceAtLeast(8L)
+                    ..((profile.typeDelayMax ?: 180L) * speedMultiplier).toLong().coerceAtLeast(25L)
+            )
+            Thread.sleep(typeDelay)
         }
         delay()
     }
@@ -40,7 +47,8 @@ class HumanBehaviorSimulator(private val profile: BehaviorProfile) {
 
         val jitter = (profile.clickJitterPx ?: 3).coerceAtLeast(0)
         val box = runCatching { locator.boundingBox() }.getOrNull()
-        if (box == null || box.width <= 0.0 || box.height <= 0.0) {
+
+        if (box == null || box.width <= 0.0 || box.height <= 0.0 || speedMultiplier < 0.4) {
             locator.click()
             delay()
             return
@@ -48,8 +56,7 @@ class HumanBehaviorSimulator(private val profile: BehaviorProfile) {
 
         val offsetX = random.nextDouble(-jitter.toDouble(), jitter.toDouble())
         val offsetY = random.nextDouble(-jitter.toDouble(), jitter.toDouble())
-        val handle = locator.elementHandle()
-        if (handle == null) {
+        val handle = locator.elementHandle() ?: run {
             locator.click()
             delay()
             return
@@ -62,7 +69,6 @@ class HumanBehaviorSimulator(private val profile: BehaviorProfile) {
                 const startY = Math.random() * window.innerHeight;
                 const endX = rect.left + rect.width / 2 + $offsetX;
                 const endY = rect.top + rect.height / 2 + $offsetY;
-
                 for (let i = 0; i <= 12; i++) {
                     const t = i / 12;
                     const x = (1 - t) * (1 - t) * startX + 2 * (1 - t) * t * (startX + (endX - startX) * 0.4) + t * t * endX;
@@ -77,15 +83,14 @@ class HumanBehaviorSimulator(private val profile: BehaviorProfile) {
             }
         """.trimIndent()
 
-        runCatching {
-            locator.page().evaluate(script, handle)
-        }.getOrElse {
-            locator.click()
-        }
+        runCatching { locator.page().evaluate(script, handle) }.getOrElse { locator.click() }
         delay()
     }
 
     fun randomScroll(page: Page) {
+        if (speedMultiplier < 0.4) {
+            return
+        }
         val scrollAmount = random.nextInt(300, 800)
         page.evaluate("window.scrollBy(0, $scrollAmount)")
         delay()
@@ -94,14 +99,6 @@ class HumanBehaviorSimulator(private val profile: BehaviorProfile) {
             delay()
         }
     }
-
-    private fun resolveMinDelay(): Long = (profile.minDelayMillis ?: 800L).coerceAtLeast(0L)
-
-    private fun resolveMaxDelay(): Long = (profile.maxDelayMillis ?: 2200L).coerceAtLeast(resolveMinDelay())
-
-    private fun resolveTypeDelayMin(): Long = (profile.typeDelayMin ?: 30L).coerceAtLeast(0L)
-
-    private fun resolveTypeDelayMax(): Long = (profile.typeDelayMax ?: 180L).coerceAtLeast(resolveTypeDelayMin())
 
     private fun gaussian(mean: Double, stdDev: Double): Double {
         var v1: Double

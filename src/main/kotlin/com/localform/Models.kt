@@ -54,7 +54,7 @@ data class StartTaskRequest(
     val maxRows: Int? = null,
     val startRow: Int? = 1,
     val endRow: Int? = null,
-    val speedLevel: Int? = 2,
+    val speedLevel: Int? = 3,
     val sourceRatioMobile: Int = 33,
     val sourceRatioLink: Int = 33,
     val sourceRatioWechat: Int = 34,

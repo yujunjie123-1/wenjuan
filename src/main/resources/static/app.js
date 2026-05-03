@@ -191,7 +191,7 @@ async function startTask() {
         maxRows: els.maxRows.value ? Number(els.maxRows.value) : null,
         startRow: Number(els.startRow.value || 1),
         endRow: els.endRow.value ? Number(els.endRow.value) : null,
-        speedLevel: Number(els.speedLevel.value || 2),
+        speedLevel: Number(els.speedLevel.value || 3),
         sourceRatioMobile: Number(els.sourceRatioMobile.value || 0),
         sourceRatioLink: Number(els.sourceRatioLink.value || 0),
         sourceRatioWechat: Number(els.sourceRatioWechat.value || 0),
