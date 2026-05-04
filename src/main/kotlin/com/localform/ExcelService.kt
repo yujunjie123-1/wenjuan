@@ -5,6 +5,9 @@ import org.apache.poi.ss.usermodel.DataFormatter
 import org.apache.poi.ss.usermodel.Row
 import org.apache.poi.ss.usermodel.WorkbookFactory
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.time.Instant
 import java.util.Locale
 import java.util.UUID
@@ -19,20 +22,23 @@ private data class UploadedWorkbook(
 
 class ExcelService(private val paths: AppPaths) {
     private val uploads = ConcurrentHashMap<String, UploadedWorkbook>()
+    private val workbookLocks = ConcurrentHashMap<String, Any>()
     private val formatter = DataFormatter(Locale.CHINA)
 
     fun saveAndPreview(originalFileName: String, bytes: ByteArray): WorkbookPreview {
         val safeName = originalFileName.substringAfterLast('\\').substringAfterLast('/').ifBlank { "workbook.xlsx" }
         val extension = safeName.substringAfterLast('.', "xlsx").lowercase(Locale.ROOT)
         require(extension == "xlsx" || extension == "xls") { "Only .xlsx and .xls files are supported." }
+        require(bytes.isNotEmpty()) { "Uploaded Excel file is empty." }
 
         val id = UUID.randomUUID().toString()
         val file = File(paths.uploadDir, "$id-$safeName").absoluteFile
         file.writeBytes(bytes)
+        require(file.length() > 0L) { "Saved Excel file is empty." }
 
+        val parsed = parseRows(file)
         val workbook = UploadedWorkbook(id, safeName, file, Instant.now())
         uploads[id] = workbook
-        val parsed = parseRows(file)
 
         return WorkbookPreview(
             workbookId = id,
@@ -45,7 +51,9 @@ class ExcelService(private val paths: AppPaths) {
 
     fun loadRows(workbookId: String): List<Map<String, String>> {
         val workbook = uploads[workbookId] ?: error("Workbook not found or server was restarted.")
-        return parseRows(workbook.file).rows
+        return synchronized(lockFor(workbookId)) {
+            parseRows(workbook.file).rows
+        }
     }
 
     fun loadRowsInRange(workbookId: String, start: Int, end: Int): List<Map<String, String>> {
@@ -57,23 +65,35 @@ class ExcelService(private val paths: AppPaths) {
 
     fun writeIpToRow(workbookId: String, rowIndex: Int, ip: String) {
         val uploaded = uploads[workbookId] ?: error("Workbook not found or server was restarted.")
-        WorkbookFactory.create(uploaded.file).use { workbook ->
-            val sheet = workbook.getSheetAt(0) ?: error("The first worksheet is empty.")
-            val headerRow = sheet.firstOrNull { row -> row.anyCellText().isNotEmpty() }
-                ?: error("No header row found in the first worksheet.")
-            val headers = headerRow.mapCells()
-            val ipColumnIndex = headers.indexOf("来自IP").takeIf { it >= 0 } ?: headers.size
-            if (ipColumnIndex == headers.size) {
-                headerRow.createCell(ipColumnIndex).setCellValue("来自IP")
-            }
+        synchronized(lockFor(workbookId)) {
+            requireReadableWorkbook(uploaded.file)
+            val tempFile = File.createTempFile("${uploaded.file.nameWithoutExtension}-", ".tmp", uploaded.file.parentFile)
+            try {
+                WorkbookFactory.create(uploaded.file).use { workbook ->
+                    val sheet = workbook.getSheetAt(0) ?: error("The first worksheet is empty.")
+                    val headerRow = sheet.firstOrNull { row -> row.anyCellText().isNotEmpty() }
+                        ?: error("No header row found in the first worksheet.")
+                    val headers = headerRow.mapCells()
+                    val ipColumnIndex = headers.indexOf("来自IP").takeIf { it >= 0 } ?: headers.size
+                    if (ipColumnIndex == headers.size) {
+                        headerRow.createCell(ipColumnIndex).setCellValue("来自IP")
+                    }
 
-            val targetRowNumber = headerRow.rowNum + rowIndex
-            val row = sheet.getRow(targetRowNumber) ?: sheet.createRow(targetRowNumber)
-            val cell = row.getCell(ipColumnIndex, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK)
-            cell.setCellValue(ip)
+                    val targetRowNumber = headerRow.rowNum + rowIndex
+                    val row = sheet.getRow(targetRowNumber) ?: sheet.createRow(targetRowNumber)
+                    val cell = row.getCell(ipColumnIndex, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK)
+                    cell.setCellValue(ip)
 
-            uploaded.file.outputStream().use { output ->
-                workbook.write(output)
+                    tempFile.outputStream().use { output ->
+                        workbook.write(output)
+                    }
+                }
+                require(tempFile.length() > 0L) { "Temporary Excel output is empty; original workbook was not replaced." }
+                replaceFile(tempFile, uploaded.file)
+            } finally {
+                if (tempFile.exists()) {
+                    tempFile.delete()
+                }
             }
         }
     }
@@ -117,6 +137,7 @@ class ExcelService(private val paths: AppPaths) {
     }
 
     private fun parseRows(file: File): ParsedWorkbook {
+        requireReadableWorkbook(file)
         WorkbookFactory.create(file).use { workbook ->
             val sheet = workbook.getSheetAt(0) ?: error("The first worksheet is empty.")
             val headerRow = sheet.firstOrNull { row -> row.anyCellText().isNotEmpty() }
@@ -150,6 +171,26 @@ class ExcelService(private val paths: AppPaths) {
     private fun Row.cellText(index: Int): String {
         val cell: Cell = getCell(index, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL) ?: return ""
         return formatter.formatCellValue(cell).trim()
+    }
+
+    private fun lockFor(workbookId: String): Any = workbookLocks.computeIfAbsent(workbookId) { Any() }
+
+    private fun requireReadableWorkbook(file: File) {
+        require(file.exists()) { "Excel file does not exist: ${file.absolutePath}" }
+        require(file.length() > 0L) { "Excel file is empty: ${file.absolutePath}" }
+    }
+
+    private fun replaceFile(source: File, target: File) {
+        try {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
     }
 }
 

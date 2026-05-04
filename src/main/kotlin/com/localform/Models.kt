@@ -16,7 +16,7 @@ data class FieldMapping(
     val excelColumn: String? = null,
     val excelColumns: List<String> = emptyList(),
     val questionTitle: String,
-    val questionType: QuestionType,
+    val questionType: QuestionType = QuestionType.AUTO,
     val valueMode: ValueMode = ValueMode.TEXT,
     val required: Boolean = true,
     val offset: Int = 0
@@ -24,6 +24,7 @@ data class FieldMapping(
 
 @Serializable
 enum class QuestionType {
+    AUTO,
     TEXT,
     SINGLE_CHOICE,
     MULTIPLE_CHOICE,
@@ -54,7 +55,8 @@ data class StartTaskRequest(
     val maxRows: Int? = null,
     val startRow: Int? = 1,
     val endRow: Int? = null,
-    val speedLevel: Int? = 3,
+    val fillDurationMinSeconds: Int? = 100,
+    val fillDurationMaxSeconds: Int? = 200,
     val sourceRatioMobile: Int = 33,
     val sourceRatioLink: Int = 33,
     val sourceRatioWechat: Int = 34,

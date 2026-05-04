@@ -98,9 +98,9 @@ class ProxyPool(
     }
 }
 
-fun Page.getCurrentIp(): String {
+fun Page.getCurrentIp(timeoutMillis: Double = 3_000.0): String {
     return try {
-        navigate("https://api.ipify.org?format=json", Page.NavigateOptions().setTimeout(10000.0))
+        navigate("https://api.ipify.org?format=json", Page.NavigateOptions().setTimeout(timeoutMillis))
         val response = textContent("body").orEmpty()
         response.substringAfter("\"ip\":\"", missingDelimiterValue = "").substringBefore("\"").ifBlank {
             "IP fetch failed"

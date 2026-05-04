@@ -55,14 +55,22 @@ class QuestionnaireRunner(
             val allRows = excelService.loadRows(request.workbookId)
             val start = (request.startRow ?: 1).coerceAtLeast(1)
             val end = request.endRow?.coerceAtMost(allRows.size) ?: allRows.size
+            val startIndex = (start - 1).coerceAtLeast(0)
+            val endExclusive = end.coerceAtMost(allRows.size)
+            val rowsInRange = if (startIndex < endExclusive) {
+                allRows.subList(startIndex, endExclusive)
+            } else {
+                emptyList()
+            }
             val rows = request.maxRows
                 ?.takeIf { it > 0 }
-                ?.let { limit -> excelService.loadRowsInRange(request.workbookId, start, end).take(limit) }
-                ?: excelService.loadRowsInRange(request.workbookId, start, end)
+                ?.let { limit -> rowsInRange.take(limit) }
+                ?: rowsInRange
             val submittedMappings = request.mappings.filterNot { it.isMetadataMapping() }
-            val generatedMappings = excelService.autoGenerateMappings(request.workbookId)
-            val mappings = submittedMappings.ifEmpty { generatedMappings }
-            val speedLevel = request.speedLevel ?: 3
+            val mappings = normalizeSubmittedMappings(
+                mappings = submittedMappings.ifEmpty { excelService.autoGenerateMappings(request.workbookId) },
+                allRows = allRows
+            )
             val submissionSources = generateShuffledSources(
                 mobileRatio = request.sourceRatioMobile,
                 linkRatio = request.sourceRatioLink,
@@ -72,7 +80,13 @@ class QuestionnaireRunner(
             if (request.changeIp && !useProxy) {
                 taskStore.append(taskId, "warn", "Change IP is enabled, but no proxies are available. Falling back to the local network.")
             }
-            taskStore.append(taskId, "info", "Visible browser execution started. Rows: ${rows.size} (range $start-$end), speed level $speedLevel.")
+            if (request.submitEnabled) {
+                taskStore.append(taskId, "warn", "Submit is enabled; automatic retry is disabled per row to avoid duplicate submissions.")
+            }
+            if (submittedMappings.isNotEmpty() && mappings.size < submittedMappings.size) {
+                taskStore.append(taskId, "info", "Merged ${submittedMappings.size} submitted mappings into ${mappings.size} questionnaire questions.")
+            }
+            taskStore.append(taskId, "info", "Visible browser execution started. Rows: ${rows.size} (range $start-$end), duration ${request.fillDurationMinSeconds ?: 100}-${request.fillDurationMaxSeconds ?: 200}s.")
 
             Playwright.create(playwrightOptions()).use { playwright ->
                 launchBrowser(playwright, effectiveAutomation).use browserUse@{ browser ->
@@ -96,7 +110,7 @@ class QuestionnaireRunner(
                                 .distinct()
                                 .take(3)
                                 .joinToString(" | ") { column -> "$column=${row[column].orEmpty()}" }
-                            val maxRetries = 3
+                            val maxRetries = if (request.submitEnabled) 1 else 3
                             var attempt = 0
                             var success = false
 
@@ -121,17 +135,32 @@ class QuestionnaireRunner(
                                         behaviorSimulator = initializedContext.behaviorSimulator
                                     )
 
+                                    if (taskStore.isCancelled(taskId)) {
+                                        taskStore.append(taskId, "warn", "Task cancelled during row $rowNumber.")
+                                        return@browserUse
+                                    }
+
                                     if (success) {
                                         activeProxySessionManager?.reportSuccess(rowKey)
                                         taskStore.append(taskId, "info", "Row $rowNumber succeeded on attempt $attempt.")
                                     } else {
                                         activeProxySessionManager?.reportFailure(rowKey)
-                                        taskStore.append(taskId, "warn", "Row $rowNumber failed on attempt $attempt, will retry with new proxy.")
+                                        val retryNote = if (attempt < maxRetries) {
+                                            "will retry with new proxy"
+                                        } else {
+                                            "no retry will be attempted"
+                                        }
+                                        taskStore.append(taskId, "warn", "Row $rowNumber failed on attempt $attempt, $retryNote.")
                                         if (attempt < maxRetries) {
                                             delay(1500)
                                         }
                                     }
                                 }
+                            }
+
+                            if (taskStore.isCancelled(taskId)) {
+                                taskStore.append(taskId, "warn", "Task cancelled during row $rowNumber.")
+                                return@browserUse
                             }
 
                             if (success) {
@@ -142,7 +171,7 @@ class QuestionnaireRunner(
                             }
 
                             if (index < rows.lastIndex) {
-                                delay(calculateIntervalBySpeedLevel(speedLevel))
+                                delay(request.intervalSeconds.toLong() * 1000L)
                             }
                         }
                     } else {
@@ -170,13 +199,17 @@ class QuestionnaireRunner(
                                     behaviorSimulator = null
                                 )
                             }
+                            if (taskStore.isCancelled(taskId)) {
+                                taskStore.append(taskId, "warn", "Task cancelled during row $rowNumber.")
+                                return@browserUse
+                            }
                             if (success) {
                                 taskStore.recordSuccess(taskId)
                             } else {
                                 taskStore.recordFailure(taskId)
                             }
                             if (index < rows.lastIndex) {
-                                delay(calculateIntervalBySpeedLevel(speedLevel))
+                                delay(request.intervalSeconds.toLong() * 1000L)
                             }
                         }
                     }
@@ -195,7 +228,6 @@ class QuestionnaireRunner(
     private fun launchBrowser(playwright: Playwright, automation: AutomationRuntimeConfig): Browser {
         val options = BrowserType.LaunchOptions()
             .setHeadless(false)
-            .setSlowMo(120.0)
 
         if (automation.enabled) {
             // Automation enhancement - optional
@@ -235,25 +267,57 @@ class QuestionnaireRunner(
         behaviorSimulator: HumanBehaviorSimulator?
     ): Boolean {
         try {
+            taskStore.append(taskId, "debug", "Row $rowNumber: fillRow started")
+
             val startedAtMillis = System.currentTimeMillis()
-            val targetDurationMillis = targetCompletionDurationMillis(request.speedLevel ?: 3)
-            val baseEstimateMs = 180_000L
+            val targetDurationMillis = targetCompletionDurationMillis(request)
+            val actionTimeoutMillis = actionTimeoutMillis(targetDurationMillis)
+            page.setDefaultTimeout(actionTimeoutMillis.toDouble())
+            page.setDefaultNavigationTimeout(actionTimeoutMillis.toDouble())
+
+            val baseEstimateMs = 60_000L
             val speedMultiplier = (targetDurationMillis.toDouble() / baseEstimateMs)
-                .coerceIn(0.12, 1.0)
+                .coerceIn(0.05, 1.0)
 
             behaviorSimulator?.speedMultiplier = speedMultiplier
-            taskStore.append(taskId, "info", "Row $rowNumber -> target: ${targetDurationMillis / 1000}s, speed x${"%.2f".format(speedMultiplier)}")
+            taskStore.append(
+                taskId,
+                "info",
+                "Row $rowNumber -> target: ${targetDurationMillis / 1000}s, speed x${"%.2f".format(speedMultiplier)}, submitEnabled=${request.submitEnabled}"
+            )
 
+            taskStore.append(taskId, "debug", "Row $rowNumber: starting navigate")
             page.navigate(
                 request.questionnaireUrl,
                 Page.NavigateOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED)
             )
-            page.waitForLoadState(LoadState.NETWORKIDLE)
+            taskStore.append(taskId, "debug", "Row $rowNumber: navigate completed, waiting for NETWORKIDLE")
+            val networkIdleTimeoutMillis = (targetDurationMillis / 5).coerceIn(1_000L, 5_000L)
+            runCatching {
+                page.waitForLoadState(
+                    LoadState.NETWORKIDLE,
+                    Page.WaitForLoadStateOptions().setTimeout(networkIdleTimeoutMillis.toDouble())
+                )
+            }.onFailure { error ->
+                taskStore.append(taskId, "debug", "Row $rowNumber: NETWORKIDLE wait skipped: ${error.message ?: error::class.simpleName.orEmpty()}")
+            }
 
-            mappings.forEach { mapping ->
+            taskStore.append(taskId, "debug", "Row $rowNumber: page ready, filling ${mappings.size} mappings")
+
+            mappings.forEachIndexed { index, mapping ->
+                if (taskStore.isCancelled(taskId)) {
+                    taskStore.append(taskId, "warn", "Task cancelled while filling row $rowNumber.")
+                    return false
+                }
+                taskStore.append(
+                    taskId,
+                    "debug",
+                    "Row $rowNumber: filling ${index + 1}/${mappings.size} -> ${mapping.questionTitle.take(30)}"
+                )
                 val values = resolveMappingValues(mapping, row)
                 if ((values.isEmpty() || values.all { it.isSkippedAnswer() }) && !mapping.required) {
-                    return@forEach
+                    taskStore.append(taskId, "debug", "Row $rowNumber: mapping skipped")
+                    return@forEachIndexed
                 }
                 require(mapping.questionTitle.isNotBlank()) {
                     "Question title is blank for Excel column ${mapping.primaryColumnLabel()}."
@@ -265,38 +329,50 @@ class QuestionnaireRunner(
                 clickNextPageIfNeeded(page, mappings, mapping, behaviorSimulator)
             }
 
+            taskStore.append(
+                taskId,
+                "info",
+                "Row $rowNumber: mappings complete, waiting for target duration (${targetDurationMillis / 1000}s)"
+            )
             waitUntilTargetDuration(page, startedAtMillis, targetDurationMillis)
+            taskStore.append(taskId, "info", "Row $rowNumber: target duration reached, starting screenshot")
             val screenshot = saveScreenshot(page, taskId, rowNumber, "filled")
+
             if (request.submitEnabled) {
+                taskStore.append(taskId, "info", "Row $rowNumber: submitEnabled=true, solving captcha and submitting")
                 val captchaSolver = CaptchaSolverFactory().create(automation)
                 if (!captchaSolver.solve(page, taskId, rowNumber)) {
                     throw RuntimeException("Captcha solve failed or timed out.")
                 }
+                taskStore.append(taskId, "debug", "Row $rowNumber: captcha solved, clicking submit")
                 clickSubmit(page, behaviorSimulator)
+                taskStore.append(taskId, "info", "Row $rowNumber filled and submit button clicked.")
                 taskStore.append(
                     taskId,
                     "info",
-                    "Row $rowNumber filled and submit button clicked.",
+                    "Row $rowNumber submit artifact captured.",
                     rowNumber,
                     screenshot.absolutePath,
                     artifactUrl(screenshot),
                     row
                 )
             } else {
+                taskStore.append(taskId, "info", "Row $rowNumber filled for review. Submit is disabled.")
                 taskStore.append(
                     taskId,
                     "info",
-                    "Row $rowNumber filled for review. Submit is disabled.",
+                    "Row $rowNumber review artifact captured.",
                     rowNumber,
                     screenshot.absolutePath,
                     artifactUrl(screenshot),
                     row
                 )
             }
-            val currentIp = page.getCurrentIp()
-            excelService.writeIpToRow(request.workbookId, rowNumber, currentIp)
+            recordCurrentIp(taskId, page, request, rowNumber)
+            taskStore.append(taskId, "debug", "Row $rowNumber: fillRow completed successfully")
             return true
         } catch (error: Throwable) {
+            taskStore.append(taskId, "error", "Row $rowNumber execution error: ${error.message ?: error::class.simpleName.orEmpty()}")
             val screenshot = runCatching { saveScreenshot(page, taskId, rowNumber, "error") }.getOrNull()
             taskStore.append(
                 taskId,
@@ -313,17 +389,31 @@ class QuestionnaireRunner(
         }
     }
 
-    private fun targetCompletionDurationMillis(speedLevel: Int): Long {
-        val (minSeconds, maxSeconds) = when (speedLevel) {
-            1 -> 60 to 90
-            2 -> 90 to 120
-            3 -> 120 to 140
-            4 -> 140 to 160
-            5 -> 160 to 180
-            6 -> 180 to 200
-            else -> 120 to 140
-        }
+    private fun targetCompletionDurationMillis(request: StartTaskRequest): Long {
+        val minSeconds = (request.fillDurationMinSeconds ?: 100).coerceAtLeast(1)
+        val maxSeconds = (request.fillDurationMaxSeconds ?: 200).coerceAtLeast(minSeconds)
         return ThreadLocalRandom.current().nextLong(minSeconds * 1000L, maxSeconds * 1000L + 1L)
+    }
+
+    private fun actionTimeoutMillis(targetDurationMillis: Long): Long {
+        return (targetDurationMillis / 2).coerceIn(5_000L, 15_000L)
+    }
+
+    private fun recordCurrentIp(
+        taskId: String,
+        page: Page,
+        request: StartTaskRequest,
+        rowNumber: Int
+    ) {
+        runCatching {
+            val currentIp = page.getCurrentIp()
+            excelService.writeIpToRow(request.workbookId, rowNumber, currentIp)
+            currentIp
+        }.onSuccess { currentIp ->
+            taskStore.append(taskId, "debug", "Row $rowNumber: IP recorded as $currentIp.")
+        }.onFailure { error ->
+            taskStore.append(taskId, "warn", "Row $rowNumber: filled/submitted, but IP recording failed: ${error.message ?: error::class.simpleName.orEmpty()}")
+        }
     }
 
     private fun waitUntilTargetDuration(page: Page, startedAtMillis: Long, targetDurationMillis: Long) {
@@ -332,19 +422,6 @@ class QuestionnaireRunner(
         if (remainingMillis > 0) {
             page.waitForTimeout(remainingMillis.toDouble())
         }
-    }
-
-    private fun calculateIntervalBySpeedLevel(level: Int): Long {
-        val (minSec, maxSec) = when (level) {
-            1 -> 5 to 10
-            2 -> 8 to 15
-            3 -> 10 to 20
-            4 -> 12 to 25
-            5 -> 15 to 30
-            6 -> 20 to 40
-            else -> 10 to 20
-        }
-        return ThreadLocalRandom.current().nextLong(minSec * 1000L, maxSec * 1000L + 1L)
     }
 
     private fun generateShuffledSources(
@@ -399,6 +476,125 @@ class QuestionnaireRunner(
         return sources
     }
 
+    private fun normalizeSubmittedMappings(
+        mappings: List<FieldMapping>,
+        allRows: List<Map<String, String>>
+    ): List<FieldMapping> {
+        val orderedGroups = linkedMapOf<Int, MutableList<FieldMapping>>()
+        val normalized = mutableListOf<FieldMapping>()
+
+        mappings.forEach { mapping ->
+            if (mapping.offset <= 0) {
+                normalized += mapping
+            } else {
+                orderedGroups.getOrPut(mapping.offset) { mutableListOf() } += mapping
+            }
+        }
+
+        orderedGroups.forEach { (_, group) ->
+            val columns = group.flatMap { it.mappedColumns() }
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinct()
+            if (columns.isEmpty()) {
+                normalized += group.first()
+                return@forEach
+            }
+
+            val first = group.first()
+            val manualQuestionType = group.firstNotNullOfOrNull { mapping ->
+                mapping.questionType.takeIf { it != QuestionType.AUTO }
+            }
+            val questionKind = if (manualQuestionType == null) classifyGroupedQuestion(columns, allRows) else null
+            val questionType = manualQuestionType ?: when (questionKind) {
+                GroupedQuestionKind.MULTI_BINARY -> QuestionType.MULTIPLE_CHOICE
+                GroupedQuestionKind.MATRIX_SCALE -> QuestionType.SCALE
+                GroupedQuestionKind.SINGLE, null -> QuestionType.AUTO
+            }
+            normalized += first.copy(
+                excelColumn = columns.first(),
+                excelColumns = columns,
+                questionType = questionType,
+                valueMode = valueModeForQuestionType(questionType, first.valueMode, columns, questionKind),
+                required = group.any { it.required }
+            )
+        }
+
+        return normalized.sortedBy { mapping ->
+            mapping.offset.takeIf { it > 0 } ?: Int.MAX_VALUE
+        }
+    }
+
+    private fun valueModeForQuestionType(
+        questionType: QuestionType,
+        currentValueMode: ValueMode,
+        columns: List<String>,
+        questionKind: GroupedQuestionKind?
+    ): ValueMode {
+        return when (questionType) {
+            QuestionType.AUTO -> currentValueMode
+            QuestionType.TEXT -> ValueMode.TEXT
+            QuestionType.MULTIPLE_CHOICE -> {
+                if (columns.size > 1 || questionKind == GroupedQuestionKind.MULTI_BINARY) {
+                    ValueMode.MULTI_BINARY_COLUMNS
+                } else {
+                    ValueMode.ORDINAL
+                }
+            }
+            QuestionType.SINGLE_CHOICE,
+            QuestionType.SCALE,
+            QuestionType.SELECT -> ValueMode.ORDINAL
+        }
+    }
+
+    private enum class GroupedQuestionKind {
+        SINGLE,
+        MULTI_BINARY,
+        MATRIX_SCALE
+    }
+
+    private fun classifyGroupedQuestion(
+        columns: List<String>,
+        allRows: List<Map<String, String>>
+    ): GroupedQuestionKind {
+        if (columns.size <= 1) {
+            return GroupedQuestionKind.SINGLE
+        }
+
+        val observedValues = allRows
+            .asSequence()
+            .flatMap { row -> columns.asSequence().map { column -> row[column].orEmpty().trim() } }
+            .filter { it.isNotBlank() && !it.isSkippedAnswer() }
+            .map { it.removeSuffix(".0").lowercase(Locale.ROOT) }
+            .toSet()
+
+        if ("0" in observedValues && observedValues.all { value -> value.isBinaryToken() }) {
+            return GroupedQuestionKind.MULTI_BINARY
+        }
+
+        return GroupedQuestionKind.MATRIX_SCALE
+    }
+
+    private fun String.isBinaryToken(): Boolean {
+        return this == "0" ||
+            this == "1" ||
+            this == "false" ||
+            this == "true" ||
+            this == "no" ||
+            this == "yes" ||
+            this == "n" ||
+            this == "y" ||
+            this == "否" ||
+            this == "是"
+    }
+
+    private fun FieldMapping.mappedColumns(): List<String> {
+        return (listOfNotNull(excelColumn) + excelColumns)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
     private fun resolveMappingValues(mapping: FieldMapping, row: Map<String, String>): List<String> {
         val columns = when {
             mapping.valueMode == ValueMode.MULTI_BINARY_COLUMNS && mapping.excelColumns.isNotEmpty() -> mapping.excelColumns
@@ -440,7 +636,13 @@ class QuestionnaireRunner(
         values: List<String>,
         behaviorSimulator: HumanBehaviorSimulator?
     ) {
-        if (mapping.offset > 0 && fillWjxQuestionByNumber(page, mapping.offset, values, behaviorSimulator)) {
+        if (mapping.offset > 0 && mapping.questionType != QuestionType.AUTO) {
+            if (fillWjxQuestionByForcedType(page, mapping, values, behaviorSimulator)) {
+                return
+            }
+        }
+
+        if (mapping.offset > 0 && mapping.questionType == QuestionType.AUTO && fillWjxQuestionByNumber(page, mapping.offset, values, behaviorSimulator)) {
             return
         }
 
@@ -475,6 +677,34 @@ class QuestionnaireRunner(
                     clickOrdinalChoice(page, mapping.questionTitle, optionIndex, behaviorSimulator, mapping.offset)
                 }
             }
+        }
+    }
+
+    private fun fillWjxQuestionByForcedType(
+        page: Page,
+        mapping: FieldMapping,
+        values: List<String>,
+        behaviorSimulator: HumanBehaviorSimulator?
+    ): Boolean {
+        val questionNumber = mapping.offset.takeIf { it > 0 } ?: return false
+        val firstValue = values.firstOrNull().orEmpty()
+        val firstOrdinal = firstValue.toOrdinalOrNull()
+
+        return when (mapping.questionType) {
+            QuestionType.AUTO -> false
+            QuestionType.TEXT -> fillWjxText(page, questionNumber, firstValue, behaviorSimulator)
+            QuestionType.SINGLE_CHOICE -> firstOrdinal
+                ?.let { clickWjxSingleOrMultiple(page, questionNumber, it, behaviorSimulator) }
+                ?: clickWjxChoiceByText(page, questionNumber, firstValue, behaviorSimulator)
+            QuestionType.MULTIPLE_CHOICE -> fillWjxMultiple(page, questionNumber, values, behaviorSimulator)
+            QuestionType.SCALE -> {
+                if (values.size > 1) {
+                    fillWjxMatrix(page, questionNumber, values, behaviorSimulator)
+                } else {
+                    firstOrdinal?.let { clickWjxScale(page, questionNumber, it, behaviorSimulator) } ?: false
+                }
+            }
+            QuestionType.SELECT -> fillWjxSelect(page, questionNumber, firstValue, firstOrdinal, behaviorSimulator)
         }
     }
 
@@ -519,7 +749,7 @@ class QuestionnaireRunner(
             if (!clickWjxNextPage(page, behaviorSimulator)) {
                 return
             }
-            page.waitForTimeout(500.0)
+            waitForPageTransition(page, behaviorSimulator)
         }
 
         require(runCatching { question.first().isVisible }.getOrDefault(false)) {
@@ -547,8 +777,13 @@ class QuestionnaireRunner(
 
         if (hasVisibleWjxNextPage(page)) {
             clickWjxNextPage(page, behaviorSimulator)
-            page.waitForTimeout(500.0)
+            waitForPageTransition(page, behaviorSimulator)
         }
+    }
+
+    private fun waitForPageTransition(page: Page, behaviorSimulator: HumanBehaviorSimulator?) {
+        val waitMillis = behaviorSimulator?.scaledDuration(500L, 30L) ?: 150L
+        page.waitForTimeout(waitMillis.toDouble())
     }
 
     private fun hasVisibleWjxNextPage(page: Page): Boolean {
@@ -601,7 +836,7 @@ class QuestionnaireRunner(
             if (behaviorSimulator != null) {
                 behaviorSimulator.delay()
             }
-            locator.click(Locator.ClickOptions().setForce(true))
+            locator.click(Locator.ClickOptions().setForce(true).setTimeout(5_000.0))
         }.isSuccess
     }
 
@@ -759,13 +994,21 @@ class QuestionnaireRunner(
         ordinal: Int?,
         behaviorSimulator: HumanBehaviorSimulator?
     ): Boolean {
-        if (ordinal != null) {
-            val opened = tryClickFirst(page.locator("#select2-q$questionNumber-container, #div$questionNumber > div:nth-child(2)"), behaviorSimulator)
-            if (opened) {
-                val option = page.locator("#select2-q$questionNumber-results > li:nth-child(${ordinal + 1})")
-                if (tryClickFirst(option, behaviorSimulator)) {
-                    return true
-                }
+        if (value.isBlank() || value.isSkippedAnswer()) {
+            return true
+        }
+
+        if (setWjxSelectValueByDom(page, questionNumber, value, ordinal)) {
+            return true
+        }
+
+        val opened = openWjxSelect(page, questionNumber, behaviorSimulator)
+        if (opened) {
+            if (ordinal != null && clickVisibleDropdownOption(page, ordinal, null, behaviorSimulator)) {
+                return true
+            }
+            if (clickVisibleDropdownOption(page, null, value, behaviorSimulator)) {
+                return true
             }
         }
 
@@ -773,7 +1016,189 @@ class QuestionnaireRunner(
         if (select.count() == 0) {
             return false
         }
-        return runCatching { select.selectOption(value) }.isSuccess
+        return runCatching { select.selectOption(value) }.isSuccess ||
+            runCatching {
+                select.evaluate(
+                    """
+                    (select, args) => {
+                        const options = Array.from(select.options || []);
+                        const ordinal = args.ordinal == null ? null : Number(args.ordinal);
+                        const option = options.find(item => String(item.value).trim() === args.value || String(item.textContent).trim() === args.value)
+                            || (ordinal == null ? null : options[ordinal])
+                            || (ordinal == null ? null : options[ordinal - 1]);
+                        if (!option) return false;
+                        select.value = option.value;
+                        option.selected = true;
+                        select.dispatchEvent(new Event('input', { bubbles: true }));
+                        select.dispatchEvent(new Event('change', { bubbles: true }));
+                        return true;
+                    }
+                    """.trimIndent(),
+                    mapOf("value" to value, "ordinal" to ordinal)
+                ) == true
+            }.getOrDefault(false)
+    }
+
+    private fun setWjxSelectValueByDom(
+        page: Page,
+        questionNumber: Int,
+        value: String,
+        ordinal: Int?
+    ): Boolean {
+        return runCatching {
+            page.evaluate(
+                """
+                (args) => {
+                    const questionNumber = String(args.questionNumber);
+                    const value = String(args.value || '').trim();
+                    const ordinal = args.ordinal == null ? null : Number(args.ordinal);
+                    const root = document.querySelector('#div' + questionNumber);
+                    const select = document.querySelector('#q' + questionNumber) || (root && root.querySelector('select'));
+                    if (!select || select.tagName !== 'SELECT') return false;
+
+                    const options = Array.from(select.options || []);
+                    if (options.length === 0) return false;
+
+                    let target = null;
+                    if (value) {
+                        target = options.find(option => {
+                            const optionValue = String(option.value || '').trim();
+                            const optionText = String(option.textContent || '').trim();
+                            return optionValue === value || optionText === value;
+                        });
+                    }
+                    if (!target && ordinal !== null && Number.isFinite(ordinal)) {
+                        const firstText = String((options[0] && (options[0].textContent || options[0].value)) || '').trim();
+                        const placeholderOffset = /请选择|please\s*select|select/i.test(firstText) ? 1 : 0;
+                        target = options[ordinal - 1 + placeholderOffset] || options[ordinal] || options[ordinal - 1];
+                    }
+                    if (!target || target.disabled) return false;
+
+                    select.value = target.value;
+                    target.selected = true;
+                    select.dispatchEvent(new Event('input', { bubbles: true }));
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+                    if (window.jQuery) {
+                        try {
+                            window.jQuery(select).trigger('input').trigger('change');
+                        } catch (_) {
+                        }
+                    }
+
+                    if (root) {
+                        const rendered = root.querySelector('.select2-selection__rendered, .select2-chosen, #select2-q' + questionNumber + '-container');
+                        if (rendered) {
+                            rendered.textContent = String(target.textContent || target.value || '').trim();
+                            rendered.title = rendered.textContent;
+                        }
+                    }
+                    return true;
+                }
+                """.trimIndent(),
+                mapOf("questionNumber" to questionNumber, "value" to value, "ordinal" to ordinal)
+            ) == true
+        }.getOrDefault(false)
+    }
+
+    private fun openWjxSelect(
+        page: Page,
+        questionNumber: Int,
+        behaviorSimulator: HumanBehaviorSimulator?
+    ): Boolean {
+        val selectors = listOf(
+            "#select2-q$questionNumber-container",
+            "#select2-q$questionNumber",
+            "#div$questionNumber .select2-selection",
+            "#div$questionNumber .select2-selection__rendered",
+            "#div$questionNumber .select2-container",
+            "#div$questionNumber .select2-choice",
+            "#div$questionNumber [role=combobox]",
+            "#div$questionNumber > div:nth-child(2)"
+        )
+        return selectors.any { selector -> tryClickFirst(page.locator(selector), behaviorSimulator) }
+    }
+
+    private fun clickVisibleDropdownOption(
+        page: Page,
+        ordinal: Int?,
+        value: String?,
+        behaviorSimulator: HumanBehaviorSimulator?
+    ): Boolean {
+        if (ordinal == null && value.isNullOrBlank()) {
+            return false
+        }
+
+        val clickedByDom = runCatching {
+            page.evaluate(
+                """
+                (args) => {
+                    const ordinal = args.ordinal == null ? null : Number(args.ordinal);
+                    const value = String(args.value || '').trim();
+                    const isVisible = (element) => {
+                        const style = window.getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                    };
+                    const dropdownSelectors = [
+                        '.select2-container--open .select2-dropdown',
+                        '.select2-dropdown',
+                        '.select2-drop-active',
+                        '.select2-drop',
+                        '.select2-results',
+                        '.select2-results__options'
+                    ];
+                    const dropdown = dropdownSelectors
+                        .flatMap(selector => Array.from(document.querySelectorAll(selector)))
+                        .find(isVisible);
+                    if (!dropdown) return false;
+                    const options = Array.from(dropdown.querySelectorAll('.select2-results__option, .select2-result, [role=treeitem], li'))
+                        .filter(option => {
+                            const text = String(option.textContent || '').trim();
+                            return isVisible(option) &&
+                                text.length > 0 &&
+                                !option.classList.contains('select2-results__option--disabled') &&
+                                !option.classList.contains('select2-disabled') &&
+                                option.getAttribute('aria-disabled') !== 'true';
+                        });
+                    if (options.length === 0) return false;
+
+                    let target = null;
+                    if (value) {
+                        target = options.find(option => String(option.textContent || '').trim() === value);
+                    }
+                    if (!target && ordinal !== null && Number.isFinite(ordinal)) {
+                        const firstText = String(options[0].textContent || '').trim();
+                        const placeholderOffset = /请选择|please\s*select|select/i.test(firstText) ? 1 : 0;
+                        target = options[ordinal - 1 + placeholderOffset] || options[ordinal] || options[ordinal - 1];
+                    }
+                    if (!target) return false;
+                    target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    target.click();
+                    return true;
+                }
+                """.trimIndent(),
+                mapOf("ordinal" to ordinal, "value" to value.orEmpty())
+            ) == true
+        }.getOrDefault(false)
+        if (clickedByDom) {
+            behaviorSimulator?.delay()
+            return true
+        }
+
+        val optionLocators = mutableListOf<Locator>()
+        if (!value.isNullOrBlank()) {
+            optionLocators += page.locator(".select2-results__option, .select2-result, [role=treeitem], li")
+                .filter(Locator.FilterOptions().setHasText(value))
+                .first()
+        }
+        if (ordinal != null) {
+            optionLocators += page.locator(".select2-results__option:nth-child(${ordinal + 1}), .select2-result:nth-child(${ordinal + 1}), [role=treeitem]:nth-child(${ordinal + 1})").first()
+            optionLocators += page.locator(".select2-results__option:nth-child($ordinal), .select2-result:nth-child($ordinal), [role=treeitem]:nth-child($ordinal)").first()
+        }
+        return optionLocators.any { locator -> tryClickFirst(locator, behaviorSimulator) }
     }
 
     private fun fillWjxSliderOrHiddenInput(
@@ -845,6 +1270,7 @@ class QuestionnaireRunner(
     ) {
         val value = values.firstOrNull().orEmpty()
         when (mapping.questionType) {
+            QuestionType.AUTO,
             QuestionType.TEXT -> fillTextQuestion(page, mapping.questionTitle, value, behaviorSimulator)
             QuestionType.SINGLE_CHOICE, QuestionType.SCALE -> clickChoice(page, mapping.questionTitle, value, behaviorSimulator)
             QuestionType.MULTIPLE_CHOICE -> values.flatMap { item ->
@@ -1008,7 +1434,7 @@ class QuestionnaireRunner(
             // Automation enhancement - optional
             behaviorSimulator.clickWithBehavior(submit)
         } else {
-            submit.click()
+            submit.click(Locator.ClickOptions().setTimeout(5_000.0))
         }
     }
 
@@ -1068,8 +1494,12 @@ fun validateStartRequest(request: StartTaskRequest) {
     request.endRow?.let { end ->
         require(end >= start) { "End row must be greater than or equal to start row." }
     }
-    val allowedSpeedLevels = setOf(1, 2, 3, 4, 5, 6)
-    require((request.speedLevel ?: 3) in allowedSpeedLevels) { "Speed level must be between 1 and 6." }
+    val fillDurationMinSeconds = request.fillDurationMinSeconds ?: 100
+    val fillDurationMaxSeconds = request.fillDurationMaxSeconds ?: 200
+    require(fillDurationMinSeconds >= 1) { "Fill duration min seconds must be at least 1." }
+    require(fillDurationMaxSeconds >= fillDurationMinSeconds) {
+        "Fill duration max seconds must be greater than or equal to min seconds."
+    }
     val sourceTotal = request.sourceRatioMobile + request.sourceRatioLink + request.sourceRatioWechat
     require(request.sourceRatioMobile >= 0 && request.sourceRatioLink >= 0 && request.sourceRatioWechat >= 0) {
         "Source ratios cannot be negative."

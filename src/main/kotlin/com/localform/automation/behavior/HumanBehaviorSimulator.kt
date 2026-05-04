@@ -13,9 +13,13 @@ class HumanBehaviorSimulator(
 
     private val random = Random(System.currentTimeMillis())
 
+    fun scaledDuration(baseMillis: Long, minMillis: Long = 20L): Long {
+        return (baseMillis * speedMultiplier).toLong().coerceAtLeast(minMillis)
+    }
+
     fun delay() {
-        val minDelay = ((profile.minDelayMillis ?: 800L) * speedMultiplier).toLong().coerceAtLeast(30L)
-        val maxDelay = ((profile.maxDelayMillis ?: 2200L) * speedMultiplier).toLong().coerceAtLeast(minDelay + 20L)
+        val minDelay = scaledDuration(profile.minDelayMillis ?: 800L, 30L)
+        val maxDelay = scaledDuration(profile.maxDelayMillis ?: 2200L, minDelay + 20L)
         val mean = (minDelay + maxDelay) / 2.0
         val stdDev = ((maxDelay - minDelay) / 4.0).coerceAtLeast(1.0)
         val delayMs = gaussian(mean, stdDev).toLong().coerceIn(minDelay, maxDelay)
@@ -30,11 +34,15 @@ class HumanBehaviorSimulator(
         locator.click()
         delay()
 
+        if (speedMultiplier < 0.25 && runCatching { locator.fill(text) }.isSuccess) {
+            return
+        }
+
         text.forEach { character ->
             locator.press(character.toString())
             val typeDelay = random.nextLong(
-                ((profile.typeDelayMin ?: 30L) * speedMultiplier).toLong().coerceAtLeast(8L)
-                    ..((profile.typeDelayMax ?: 180L) * speedMultiplier).toLong().coerceAtLeast(25L)
+                scaledDuration(profile.typeDelayMin ?: 30L, 8L)
+                    ..scaledDuration(profile.typeDelayMax ?: 180L, 25L)
             )
             Thread.sleep(typeDelay)
         }

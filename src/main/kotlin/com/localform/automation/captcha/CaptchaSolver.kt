@@ -11,10 +11,20 @@ interface CaptchaSolver {
 
 class ManualCaptchaSolver : CaptchaSolver {
     override fun isCaptchaPresent(page: Page): Boolean {
-        val selector = "img[src*='captcha'], #captcha, .captcha, [id*='captcha'], [id*='verify'], [class*='verify']"
-        val textSelector = "text=/验证码|验证|Verification|captcha/i"
+        val selectors = listOf(
+            "img[src*='captcha']",
+            "#captcha",
+            ".captcha",
+            "[id*='captcha']",
+            "[id*='verify']",
+            "[class*='verify']",
+            "text=/验证码|验证|Verification|captcha/i"
+        )
         return runCatching {
-            page.locator(selector).count() > 0 || page.locator(textSelector).count() > 0
+            selectors.any { selector ->
+                val locator = page.locator(selector).first()
+                locator.count() > 0 && locator.isVisible
+            }
         }.getOrDefault(false)
     }
 
@@ -45,8 +55,8 @@ class CaptchaSolverFactory {
         }
 
         return when (profile?.mode?.lowercase(Locale.ROOT)) {
-            null, "", "manual" -> ManualCaptchaSolver()
-            "none", "disabled", "off" -> NoopCaptchaSolver()
+            "manual" -> ManualCaptchaSolver()
+            null, "", "none", "disabled", "off" -> NoopCaptchaSolver()
             else -> ManualCaptchaSolver()
         }
     }

@@ -14,7 +14,8 @@ const els = {
     maxRows: document.querySelector("#maxRows"),
     startRow: document.querySelector("#startRow"),
     endRow: document.querySelector("#endRow"),
-    speedLevel: document.querySelector("#speedLevel"),
+    fillDurationMinSeconds: document.querySelector("#fillDurationMinSeconds"),
+    fillDurationMaxSeconds: document.querySelector("#fillDurationMaxSeconds"),
     sourceRatioMobile: document.querySelector("#sourceRatioMobile"),
     sourceRatioLink: document.querySelector("#sourceRatioLink"),
     sourceRatioWechat: document.querySelector("#sourceRatioWechat"),
@@ -79,7 +80,7 @@ async function uploadWorkbook() {
                 excelColumn: header,
                 excelColumns: [header],
                 questionTitle: isQuestionColumn ? header : "",
-                questionType: "TEXT",
+                questionType: isQuestionColumn ? "AUTO" : "TEXT",
                 valueMode: isQuestionColumn ? "ORDINAL" : "TEXT",
                 required: isQuestionColumn,
                 offset: isQuestionColumn ? questionNumber : 0
@@ -116,6 +117,7 @@ function renderMappings() {
             <td><input data-index="${index}" data-field="questionTitle" value="${escapeAttr(mapping.questionTitle)}" placeholder="问卷中的题目文字"></td>
             <td>
                 <select data-index="${index}" data-field="questionType">
+                    ${questionTypeOption("AUTO", "自动判断", mapping.questionType)}
                     ${questionTypeOption("TEXT", "填空题", mapping.questionType)}
                     ${questionTypeOption("SINGLE_CHOICE", "单选题", mapping.questionType)}
                     ${questionTypeOption("MULTIPLE_CHOICE", "多选题", mapping.questionType)}
@@ -182,16 +184,15 @@ async function startTask() {
             .filter(mapping => mapping.questionTitle.trim())
             .map(mapping => ({
                 ...mapping,
-                excelColumns: mapping.valueMode === "MULTI_BINARY_COLUMNS"
-                    ? (mapping.excelColumns && mapping.excelColumns.length ? mapping.excelColumns : [mapping.excelColumn])
-                    : []
+                excelColumns: mapping.excelColumns && mapping.excelColumns.length ? mapping.excelColumns : [mapping.excelColumn]
             })),
         mode: els.executionMode.value,
         intervalSeconds: Number(els.intervalSeconds.value || 3),
         maxRows: els.maxRows.value ? Number(els.maxRows.value) : null,
         startRow: Number(els.startRow.value || 1),
         endRow: els.endRow.value ? Number(els.endRow.value) : null,
-        speedLevel: Number(els.speedLevel.value || 3),
+        fillDurationMinSeconds: Number(els.fillDurationMinSeconds.value || 100),
+        fillDurationMaxSeconds: Number(els.fillDurationMaxSeconds.value || 200),
         sourceRatioMobile: Number(els.sourceRatioMobile.value || 0),
         sourceRatioLink: Number(els.sourceRatioLink.value || 0),
         sourceRatioWechat: Number(els.sourceRatioWechat.value || 0),
@@ -208,6 +209,10 @@ async function startTask() {
     }
     if (request.endRow !== null && request.endRow < request.startRow) {
         alert("结束份数必须大于或等于起始份数。");
+        return;
+    }
+    if (request.fillDurationMinSeconds < 1 || request.fillDurationMaxSeconds < request.fillDurationMinSeconds) {
+        alert("填写用时最大秒数必须大于或等于最小秒数。");
         return;
     }
     const sourceTotal = request.sourceRatioMobile + request.sourceRatioLink + request.sourceRatioWechat;

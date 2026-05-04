@@ -59,15 +59,14 @@
                     <input id="maxRows" type="number" min="1" placeholder="默认按区间全量执行">
                 </label>
                 <label class="field">
-                    <span>提交速度等级</span>
-                    <select id="speedLevel">
-                        <option value="1">1级：整份约60-90秒</option>
-                        <option value="2">2级：整份约90-120秒</option>
-                        <option value="3" selected>3级：整份约120-140秒</option>
-                        <option value="4">4级：整份约140-160秒</option>
-                        <option value="5">5级：整份约160-180秒</option>
-                        <option value="6">6级：整份约180-200秒</option>
-                    </select>
+                    <span>填写用时最小秒数</span>
+                    <input id="fillDurationMinSeconds" type="number" min="1" value="100">
+                </label>
+            </div>
+            <div class="grid two">
+                <label class="field">
+                    <span>填写用时最大秒数</span>
+                    <input id="fillDurationMaxSeconds" type="number" min="1" value="200">
                 </label>
             </div>
             <div class="field">
