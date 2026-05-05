@@ -23,8 +23,9 @@ class ProxySessionManager(
         val proxy = pool?.getProxyForRow(rowKey)
         if (proxy != null) {
             rowProxies[rowKey] = proxy
+            val normalizedServer = normalizeProxyUrl(proxy.url)
             return profile.copy(
-                server = proxy.url,
+                server = normalizedServer,
                 servers = emptyList(),
                 username = proxy.username,
                 password = proxy.password
@@ -34,7 +35,19 @@ class ProxySessionManager(
         val server = profile.server?.takeIf { it.isNotBlank() }
             ?: profile.servers.firstOrNull { it.isNotBlank() }
             ?: return null
-        return profile.copy(server = server, servers = emptyList())
+
+        val normalizedServer = normalizeProxyUrl(server)
+        return profile.copy(server = normalizedServer, servers = emptyList())
+    }
+
+    private fun normalizeProxyUrl(server: String): String {
+        val trimmed = server.trim()
+        return when {
+            trimmed.startsWith("http://", ignoreCase = true) ||
+                trimmed.startsWith("https://", ignoreCase = true) ||
+                trimmed.startsWith("socks5://", ignoreCase = true) -> trimmed
+            else -> "http://$trimmed"
+        }
     }
 
     fun reportFailure(rowKey: String): String? {

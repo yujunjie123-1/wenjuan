@@ -53,7 +53,7 @@ class ContextInitializer(
                 .setHasTouch(true)
                 .setDeviceScaleFactor(3.0)
             "wechat" -> options
-                .setUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.69(0x1800452c) NetType/WIFI Language/zh_CN")
+                .setUserAgent("Mozilla/5.0 (Linux; Android 13; V2148A Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36 XWEB/1160117 MMWEBSDK/20240404 MMWEBID/8833 MicroMessenger/8.0.49.2600(0x28003137) WeChat/arm64 Weixin NetType/WIFI Language/zh_CN ABI/arm64")
                 .setViewportSize(375, 812)
                 .setIsMobile(true)
                 .setHasTouch(true)

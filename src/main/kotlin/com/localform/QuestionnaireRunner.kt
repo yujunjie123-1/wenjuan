@@ -32,6 +32,12 @@ class QuestionnaireRunner(
     // Automation enhancement - optional
     private val automationConfigService: AutomationConfigService
 ) {
+    private companion object {
+        const val SUBMIT_COMPLETION_TIMEOUT_MILLIS = 12_000.0
+        const val SUBMIT_COMPLETION_POLL_MILLIS = 500.0
+        const val POST_SUBMIT_FALLBACK_SETTLE_MILLIS = 2_000.0
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun start(taskId: String, request: StartTaskRequest) {
@@ -336,7 +342,7 @@ class QuestionnaireRunner(
             )
             waitUntilTargetDuration(page, startedAtMillis, targetDurationMillis)
             taskStore.append(taskId, "info", "Row $rowNumber: target duration reached, starting screenshot")
-            val screenshot = saveScreenshot(page, taskId, rowNumber, "filled")
+            val filledScreenshot = saveScreenshot(page, taskId, rowNumber, "filled")
 
             if (request.submitEnabled) {
                 taskStore.append(taskId, "info", "Row $rowNumber: submitEnabled=true, solving captcha and submitting")
@@ -347,13 +353,16 @@ class QuestionnaireRunner(
                 taskStore.append(taskId, "debug", "Row $rowNumber: captcha solved, clicking submit")
                 clickSubmit(page, behaviorSimulator)
                 taskStore.append(taskId, "info", "Row $rowNumber filled and submit button clicked.")
+                waitForSubmitCompletion(page, taskId, rowNumber)
+                val submitScreenshot = runCatching { saveScreenshot(page, taskId, rowNumber, "submitted") }
+                    .getOrElse { filledScreenshot }
                 taskStore.append(
                     taskId,
                     "info",
                     "Row $rowNumber submit artifact captured.",
                     rowNumber,
-                    screenshot.absolutePath,
-                    artifactUrl(screenshot),
+                    submitScreenshot.absolutePath,
+                    artifactUrl(submitScreenshot),
                     row
                 )
             } else {
@@ -363,8 +372,8 @@ class QuestionnaireRunner(
                     "info",
                     "Row $rowNumber review artifact captured.",
                     rowNumber,
-                    screenshot.absolutePath,
-                    artifactUrl(screenshot),
+                    filledScreenshot.absolutePath,
+                    artifactUrl(filledScreenshot),
                     row
                 )
             }
@@ -385,7 +394,73 @@ class QuestionnaireRunner(
             )
             return false
         } finally {
-            runCatching { page.close() }
+            detachPageBeforeContextClose(page, taskId, rowNumber)
+        }
+    }
+
+    private fun waitForSubmitCompletion(page: Page, taskId: String, rowNumber: Int): Boolean {
+        if (page.isClosed) {
+            taskStore.append(taskId, "debug", "Row $rowNumber: page already closed after submit.")
+            return true
+        }
+
+        val completed = runCatching {
+            page.waitForFunction(
+                """
+                () => {
+                    const url = window.location.href || "";
+                    const text = document.body?.innerText || document.documentElement?.innerText || "";
+                    return url.includes("completemobile") ||
+                        url.includes("/wjx/join/complete") ||
+                        url.includes("/join/complete") ||
+                        text.includes("您的答卷已经提交") ||
+                        text.includes("感谢您的参与") ||
+                        text.includes("恭喜您获得了") ||
+                        text.includes("立即抽奖") ||
+                        text.includes("抽奖机会");
+                }
+                """.trimIndent(),
+                null,
+                Page.WaitForFunctionOptions()
+                    .setTimeout(SUBMIT_COMPLETION_TIMEOUT_MILLIS)
+                    .setPollingInterval(SUBMIT_COMPLETION_POLL_MILLIS)
+            )
+        }.fold(
+            onSuccess = { true },
+            onFailure = { error ->
+                taskStore.append(
+                    taskId,
+                    "warn",
+                    "Row $rowNumber: submit completion signal was not detected within ${SUBMIT_COMPLETION_TIMEOUT_MILLIS.toLong() / 1000}s; continuing after fallback settle. ${error.message ?: error::class.simpleName.orEmpty()}"
+                )
+                false
+            }
+        )
+
+        if (completed) {
+            taskStore.append(taskId, "debug", "Row $rowNumber: submit completion page detected at ${runCatching { page.url() }.getOrDefault("unknown")}.")
+            return true
+        }
+
+        if (!page.isClosed) {
+            runCatching { page.waitForTimeout(POST_SUBMIT_FALLBACK_SETTLE_MILLIS) }
+        }
+        return false
+    }
+
+    private fun detachPageBeforeContextClose(page: Page, taskId: String, rowNumber: Int) {
+        if (page.isClosed) {
+            return
+        }
+        runCatching {
+            page.navigate(
+                "about:blank",
+                Page.NavigateOptions()
+                    .setWaitUntil(WaitUntilState.DOMCONTENTLOADED)
+                    .setTimeout(2_000.0)
+            )
+        }.onFailure { error ->
+            taskStore.append(taskId, "debug", "Row $rowNumber: page detach before context close skipped: ${error.message ?: error::class.simpleName.orEmpty()}")
         }
     }
 
