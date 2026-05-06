@@ -70,6 +70,20 @@ data class StartTaskRequest(
 )
 
 @Serializable
+data class HighAlphaTaskRequest(
+    val questionnaireUrl: String,
+    val count: Int,
+    val fillDurationMinSeconds: Int? = 100,
+    val fillDurationMaxSeconds: Int? = 200,
+    val submitEnabled: Boolean = true,
+    val automationProfileId: String? = null,
+    val proxyProfileId: String? = null,
+    val fingerprintProfileId: String? = null,
+    val behaviorProfileId: String? = null,
+    val captchaProfileId: String? = null
+)
+
+@Serializable
 enum class TaskStatus {
     QUEUED,
     RUNNING,

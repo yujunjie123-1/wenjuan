@@ -16,6 +16,7 @@ const els = {
     endRow: document.querySelector("#endRow"),
     fillDurationMinSeconds: document.querySelector("#fillDurationMinSeconds"),
     fillDurationMaxSeconds: document.querySelector("#fillDurationMaxSeconds"),
+    highAlphaCount: document.querySelector("#highAlphaCount"),
     sourceRatioMobile: document.querySelector("#sourceRatioMobile"),
     sourceRatioLink: document.querySelector("#sourceRatioLink"),
     sourceRatioWechat: document.querySelector("#sourceRatioWechat"),
@@ -26,6 +27,7 @@ const els = {
     mappingTableBody: document.querySelector("#mappingTable tbody"),
     copyHeaderButton: document.querySelector("#copyHeaderButton"),
     startButton: document.querySelector("#startButton"),
+    highAlphaButton: document.querySelector("#highAlphaButton"),
     cancelButton: document.querySelector("#cancelButton"),
     statusValue: document.querySelector("#statusValue"),
     completedValue: document.querySelector("#completedValue"),
@@ -239,6 +241,50 @@ async function startTask() {
     }
 }
 
+function startHighAlphaFill() {
+    const questionnaireUrl = els.questionnaireUrl.value.trim();
+    const count = Number(els.highAlphaCount.value || 0);
+    const request = {
+        questionnaireUrl,
+        count,
+        fillDurationMinSeconds: Number(els.fillDurationMinSeconds.value || 100),
+        fillDurationMaxSeconds: Number(els.fillDurationMaxSeconds.value || 200),
+        submitEnabled: els.submitEnabled.checked
+    };
+
+    if (!request.questionnaireUrl) {
+        alert("请输入问卷链接。");
+        return;
+    }
+    if (!Number.isInteger(request.count) || request.count <= 0) {
+        alert("请填写“高信效度份数”。");
+        return;
+    }
+    if (request.fillDurationMinSeconds < 1 || request.fillDurationMaxSeconds < request.fillDurationMinSeconds) {
+        alert("填写用时最大秒数必须大于或等于最小秒数。");
+        return;
+    }
+
+    els.startButton.disabled = true;
+    els.highAlphaButton.disabled = true;
+    els.cancelButton.disabled = false;
+
+    api("/api/high-alpha/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request)
+    }).then(task => {
+        state.taskId = task.id;
+        renderTask(task);
+        startPolling();
+    }).catch(error => {
+        alert(error.message);
+        els.startButton.disabled = !state.workbook;
+        els.highAlphaButton.disabled = false;
+        els.cancelButton.disabled = true;
+    });
+}
+
 async function cancelTask() {
     if (!state.taskId) {
         return;
@@ -262,7 +308,8 @@ function startPolling() {
             renderTask(task);
             if (["COMPLETED", "FAILED", "CANCELLED"].includes(task.status)) {
                 clearInterval(state.pollTimer);
-                els.startButton.disabled = false;
+                els.startButton.disabled = !state.workbook;
+                els.highAlphaButton.disabled = false;
                 els.cancelButton.disabled = true;
             }
         } catch (error) {
@@ -370,6 +417,7 @@ els.mappingTableBody.addEventListener("input", updateMapping);
 els.mappingTableBody.addEventListener("change", updateMapping);
 els.copyHeaderButton.addEventListener("click", copyHeadersToQuestions);
 els.startButton.addEventListener("click", startTask);
+els.highAlphaButton.addEventListener("click", startHighAlphaFill);
 els.cancelButton.addEventListener("click", cancelTask);
 
 linkSourceRatios();

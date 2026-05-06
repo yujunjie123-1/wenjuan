@@ -47,6 +47,7 @@ fun Application.module() {
     val automationConfigService = AutomationConfigService(paths)
     val taskStore = TaskStore()
     val runner = QuestionnaireRunner(paths, excelService, taskStore, automationConfigService)
+    val highAlphaFiller = OneClickHighAlphaFiller(taskStore)
 
     install(CallLogging)
     install(CORS) {
@@ -116,6 +117,14 @@ fun Application.module() {
                 ?: rangeSize
             val task = taskStore.create(totalRows)
             runner.start(task.id, request.copy(maxRows = totalRows))
+            call.respond(task)
+        }
+
+        post("/api/high-alpha/tasks") {
+            val request = call.receive<HighAlphaTaskRequest>()
+            validateHighAlphaRequest(request)
+            val task = taskStore.create(request.count)
+            highAlphaFiller.start(task.id, request)
             call.respond(task)
         }
 
