@@ -10,6 +10,7 @@ class ProxySessionManager(
     private val proxyProfile: ProxyProfile? = null,
     private val paths: AppPaths? = null
 ) {
+    private val bilinIpFetcher = BilinIpFetcher()
     private val failures = ConcurrentHashMap<String, Int>()
     private val rowProxies = ConcurrentHashMap<String, Proxy>()
     private val pool = createPool()
@@ -20,6 +21,22 @@ class ProxySessionManager(
 
     fun currentProxyProfileForRow(rowKey: String): ProxyProfile? {
         val profile = proxyProfile?.takeIf { it.enabled } ?: return null
+
+        val freshProxy = bilinIpFetcher.fetchFreshProxy()
+        if (freshProxy != null) {
+            val dynamicProxy = ProxyPool.parseLine(freshProxy)
+            if (dynamicProxy != null) {
+                rowProxies[rowKey] = dynamicProxy
+                val normalizedServer = normalizeProxyUrl(freshProxy)
+                return profile.copy(
+                    server = normalizedServer,
+                    servers = emptyList(),
+                    username = dynamicProxy.username,
+                    password = dynamicProxy.password
+                )
+            }
+        }
+
         val proxy = pool?.getProxyForRow(rowKey)
         if (proxy != null) {
             rowProxies[rowKey] = proxy

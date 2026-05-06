@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.net.URI
 import java.nio.file.Path
+import java.util.Base64
 import java.util.Locale
 import java.util.concurrent.ThreadLocalRandom
 
@@ -36,6 +37,14 @@ class QuestionnaireRunner(
         const val SUBMIT_COMPLETION_TIMEOUT_MILLIS = 12_000.0
         const val SUBMIT_COMPLETION_POLL_MILLIS = 500.0
         const val POST_SUBMIT_FALLBACK_SETTLE_MILLIS = 2_000.0
+        const val SCREENSHOT_STABILIZE_MILLIS = 800.0
+        const val SCREENSHOT_RETRY_STABILIZE_MILLIS = 1_200.0
+        const val SCREENSHOT_TIMEOUT_MILLIS = 15_000.0
+        const val NAVIGATION_TIMEOUT_MILLIS = 30_000.0
+        const val NAVIGATION_RETRY_DELAY_MILLIS = 2_000.0
+        val PLACEHOLDER_SCREENSHOT_BYTES: ByteArray = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        )
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -293,12 +302,33 @@ class QuestionnaireRunner(
             )
 
             taskStore.append(taskId, "debug", "Row $rowNumber: starting navigate")
-            page.navigate(
-                request.questionnaireUrl,
-                Page.NavigateOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED)
-            )
+            var navigateSuccess = false
+            for (attempt in 1..2) {
+                try {
+                    page.navigate(
+                        request.questionnaireUrl,
+                        Page.NavigateOptions()
+                            .setWaitUntil(WaitUntilState.DOMCONTENTLOADED)
+                            .setTimeout(NAVIGATION_TIMEOUT_MILLIS)
+                    )
+                    navigateSuccess = true
+                    break
+                } catch (error: Exception) {
+                    taskStore.append(
+                        taskId,
+                        "warn",
+                        "Row $rowNumber: Navigate attempt $attempt failed: ${error.message?.take(80) ?: error::class.simpleName.orEmpty()}"
+                    )
+                    if (attempt < 2) {
+                        page.waitForTimeout(NAVIGATION_RETRY_DELAY_MILLIS)
+                    }
+                }
+            }
+            if (!navigateSuccess) {
+                throw RuntimeException("Navigate failed after retries.")
+            }
             taskStore.append(taskId, "debug", "Row $rowNumber: navigate completed, waiting for NETWORKIDLE")
-            val networkIdleTimeoutMillis = (targetDurationMillis / 5).coerceIn(1_000L, 5_000L)
+            val networkIdleTimeoutMillis = (targetDurationMillis / 5).coerceIn(1_000L, 8_000L)
             runCatching {
                 page.waitForLoadState(
                     LoadState.NETWORKIDLE,
@@ -342,7 +372,8 @@ class QuestionnaireRunner(
             )
             waitUntilTargetDuration(page, startedAtMillis, targetDurationMillis)
             taskStore.append(taskId, "info", "Row $rowNumber: target duration reached, starting screenshot")
-            val filledScreenshot = saveScreenshot(page, taskId, rowNumber, "filled")
+            val filledScreenshot = runCatching { saveScreenshot(page, taskId, rowNumber, "filled") }
+                .getOrElse { createScreenshotPlaceholder(taskId, rowNumber, "filled") }
 
             if (request.submitEnabled) {
                 taskStore.append(taskId, "info", "Row $rowNumber: submitEnabled=true, solving captcha and submitting")
@@ -355,7 +386,7 @@ class QuestionnaireRunner(
                 taskStore.append(taskId, "info", "Row $rowNumber filled and submit button clicked.")
                 waitForSubmitCompletion(page, taskId, rowNumber)
                 val submitScreenshot = runCatching { saveScreenshot(page, taskId, rowNumber, "submitted") }
-                    .getOrElse { filledScreenshot }
+                    .getOrElse { createScreenshotPlaceholder(taskId, rowNumber, "submitted") }
                 taskStore.append(
                     taskId,
                     "info",
@@ -1527,16 +1558,48 @@ class QuestionnaireRunner(
     }
 
     private fun saveScreenshot(page: Page, taskId: String, rowNumber: Int, suffix: String): File {
-        val taskDir = File(paths.screenshotDir, taskId).absoluteFile
-        taskDir.mkdirs()
-        val file = File(taskDir, "row-$rowNumber-$suffix.png").absoluteFile
+        val file = screenshotFile(taskId, rowNumber, suffix)
+        return runCatching {
+            page.waitForTimeout(SCREENSHOT_STABILIZE_MILLIS)
+            captureScreenshot(page, file, fullPage = true)
+        }.recoverCatching {
+            page.waitForTimeout(SCREENSHOT_RETRY_STABILIZE_MILLIS)
+            captureScreenshot(page, file, fullPage = false)
+        }.onFailure { error ->
+            taskStore.append(
+                taskId,
+                "warn",
+                "Row $rowNumber: Screenshot failed for $suffix: ${error.message?.take(100) ?: error::class.simpleName.orEmpty()}"
+            )
+        }.getOrElse {
+            createScreenshotPlaceholder(file)
+        }
+    }
+
+    private fun captureScreenshot(page: Page, file: File, fullPage: Boolean): File {
         page.screenshot(
             Page.ScreenshotOptions()
                 .setPath(Path.of(file.absolutePath))
-                .setFullPage(true)
-                .setTimeout(60000.0)
+                .setFullPage(fullPage)
+                .setTimeout(SCREENSHOT_TIMEOUT_MILLIS)
         )
         return file
+    }
+
+    private fun createScreenshotPlaceholder(taskId: String, rowNumber: Int, suffix: String): File {
+        return createScreenshotPlaceholder(screenshotFile(taskId, rowNumber, suffix))
+    }
+
+    private fun createScreenshotPlaceholder(file: File): File {
+        file.parentFile.mkdirs()
+        file.writeBytes(PLACEHOLDER_SCREENSHOT_BYTES)
+        return file
+    }
+
+    private fun screenshotFile(taskId: String, rowNumber: Int, suffix: String): File {
+        val taskDir = File(paths.screenshotDir, taskId).absoluteFile
+        taskDir.mkdirs()
+        return File(taskDir, "row-$rowNumber-$suffix.png").absoluteFile
     }
 
     private fun artifactUrl(file: File): String {
