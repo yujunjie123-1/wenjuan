@@ -42,6 +42,8 @@ class QuestionnaireRunner(
         const val SCREENSHOT_TIMEOUT_MILLIS = 15_000.0
         const val NAVIGATION_TIMEOUT_MILLIS = 30_000.0
         const val NAVIGATION_RETRY_DELAY_MILLIS = 2_000.0
+        const val ROW_MAX_RETRIES = 3
+        const val ROW_RETRY_DELAY_MILLIS = 3_000L
         val PLACEHOLDER_SCREENSHOT_BYTES: ByteArray = Base64.getDecoder().decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
         )
@@ -96,7 +98,7 @@ class QuestionnaireRunner(
                 taskStore.append(taskId, "warn", "Change IP is enabled, but no proxies are available. Falling back to the local network.")
             }
             if (request.submitEnabled) {
-                taskStore.append(taskId, "warn", "Submit is enabled; automatic retry is disabled per row to avoid duplicate submissions.")
+                taskStore.append(taskId, "warn", "Submit is enabled; failed rows will retry up to $ROW_MAX_RETRIES times before being counted as failed.")
             }
             if (submittedMappings.isNotEmpty() && mappings.size < submittedMappings.size) {
                 taskStore.append(taskId, "info", "Merged ${submittedMappings.size} submitted mappings into ${mappings.size} questionnaire questions.")
@@ -125,7 +127,7 @@ class QuestionnaireRunner(
                                 .distinct()
                                 .take(3)
                                 .joinToString(" | ") { column -> "$column=${row[column].orEmpty()}" }
-                            val maxRetries = if (request.submitEnabled) 1 else 3
+                            val maxRetries = ROW_MAX_RETRIES
                             var attempt = 0
                             var success = false
 
@@ -161,13 +163,13 @@ class QuestionnaireRunner(
                                     } else {
                                         activeProxySessionManager?.reportFailure(rowKey)
                                         val retryNote = if (attempt < maxRetries) {
-                                            "will retry with new proxy"
+                                            "will retry same row with a fresh context"
                                         } else {
                                             "no retry will be attempted"
                                         }
                                         taskStore.append(taskId, "warn", "Row $rowNumber failed on attempt $attempt, $retryNote.")
                                         if (attempt < maxRetries) {
-                                            delay(1500)
+                                            delay(ROW_RETRY_DELAY_MILLIS)
                                         }
                                     }
                                 }
@@ -198,21 +200,32 @@ class QuestionnaireRunner(
                             }
                             val rowNumber = start + index
                             val submissionSource = submissionSources[index]
-                            taskStore.append(taskId, "info", "Filling row $rowNumber. Source: $submissionSource.")
-                            val contextOptions = Browser.NewContextOptions()
-                                .setViewportSize(1280, 900)
-                            val finalOptions = contextInitializer.applySubmissionSourceFingerprint(contextOptions, submissionSource)
-                            val success = browser.newContext(finalOptions).use { context ->
-                                fillRow(
-                                    taskId = taskId,
-                                    page = context.newPage(),
-                                    request = request,
-                                    automation = effectiveAutomation,
-                                    mappings = mappings,
-                                    row = row,
-                                    rowNumber = rowNumber,
-                                    behaviorSimulator = null
-                                )
+                            var attempt = 0
+                            var success = false
+                            while (attempt < ROW_MAX_RETRIES && !success) {
+                                attempt += 1
+                                val attemptMessage = if (attempt > 1) " (retry $attempt/$ROW_MAX_RETRIES)" else ""
+                                taskStore.append(taskId, "info", "Filling row $rowNumber$attemptMessage. Source: $submissionSource.")
+                                val contextOptions = Browser.NewContextOptions()
+                                    .setViewportSize(1280, 900)
+                                val finalOptions = contextInitializer.applySubmissionSourceFingerprint(contextOptions, submissionSource)
+                                success = browser.newContext(finalOptions).use { context ->
+                                    contextInitializer.addSubmissionSourceInitScripts(context, submissionSource)
+                                    fillRow(
+                                        taskId = taskId,
+                                        page = context.newPage(),
+                                        request = request,
+                                        automation = effectiveAutomation,
+                                        mappings = mappings,
+                                        row = row,
+                                        rowNumber = rowNumber,
+                                        behaviorSimulator = null
+                                    )
+                                }
+                                if (!success && attempt < ROW_MAX_RETRIES) {
+                                    taskStore.append(taskId, "warn", "Row $rowNumber failed on attempt $attempt, will retry same row with a fresh context.")
+                                    delay(ROW_RETRY_DELAY_MILLIS)
+                                }
                             }
                             if (taskStore.isCancelled(taskId)) {
                                 taskStore.append(taskId, "warn", "Task cancelled during row $rowNumber.")
@@ -221,6 +234,7 @@ class QuestionnaireRunner(
                             if (success) {
                                 taskStore.recordSuccess(taskId)
                             } else {
+                                taskStore.append(taskId, "error", "Row $rowNumber failed after $ROW_MAX_RETRIES attempts.")
                                 taskStore.recordFailure(taskId)
                             }
                             if (index < rows.lastIndex) {

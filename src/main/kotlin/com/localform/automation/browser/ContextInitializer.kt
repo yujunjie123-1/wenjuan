@@ -37,11 +37,18 @@ class ContextInitializer(
         initScriptFactory.createInitScripts(rowAutomation).forEach { script ->
             context.addInitScript(script)
         }
+        addSubmissionSourceInitScripts(context, submissionSource)
 
         return InitializedContext(
             context = context,
             behaviorSimulator = createBehaviorSimulator(rowAutomation)
         )
+    }
+
+    fun addSubmissionSourceInitScripts(context: BrowserContext, source: String) {
+        wechatEnvironmentScript(source)?.let { script ->
+            context.addInitScript(script)
+        }
     }
 
     fun applySubmissionSourceFingerprint(options: NewContextOptions, source: String): NewContextOptions {
@@ -53,7 +60,7 @@ class ContextInitializer(
                 .setHasTouch(true)
                 .setDeviceScaleFactor(3.0)
             "wechat" -> options
-                .setUserAgent("Mozilla/5.0 (Linux; Android 13; V2148A Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36 XWEB/1160117 MMWEBSDK/20240404 MMWEBID/8833 MicroMessenger/8.0.49.2600(0x28003137) WeChat/arm64 Weixin NetType/WIFI Language/zh_CN ABI/arm64")
+                .setUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.69(0x18000692) NetType/WIFI Language/zh_CN")
                 .setViewportSize(375, 812)
                 .setIsMobile(true)
                 .setHasTouch(true)
@@ -61,6 +68,39 @@ class ContextInitializer(
             else -> options
                 .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36")
         }
+    }
+
+    private fun wechatEnvironmentScript(source: String): String? {
+        if (source != "wechat") {
+            return null
+        }
+        return """
+            const wxUserAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.69(0x18000692) NetType/WIFI Language/zh_CN';
+            Object.defineProperty(navigator, 'userAgent', { get: () => wxUserAgent });
+
+            window.WeixinJSBridge = {
+                invoke: function(method, params, callback) {
+                    if (callback) callback({ err_msg: 'ok' });
+                },
+                call: function(method, params, callback) {
+                    if (callback) callback({ err_msg: 'ok' });
+                },
+                on: function(event, callback) {
+                    if (callback) callback();
+                }
+            };
+
+            Object.defineProperty(window, '__wxjs_environment', { value: {
+                isWeChat: true,
+                isIOS: true,
+                isAndroid: false,
+                version: '8.0.69'
+            }, configurable: true });
+            Object.defineProperty(window, '__wxjs_is_wechat', { value: true, configurable: true });
+
+            window.wx = window.WeixinJSBridge;
+            console.log('%cOK [WeChat Spoof v2] WeChat environment injected', 'color:#07C160;font-weight:bold');
+        """.trimIndent()
     }
 
     private fun AutomationRuntimeConfig.withRowProxy(rowKey: String): AutomationRuntimeConfig {

@@ -7,7 +7,6 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 class BilinIpFetcher {
-
     private val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
         .build()

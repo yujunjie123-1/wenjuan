@@ -115,6 +115,7 @@ class OneClickHighAlphaFiller(
             fillLikertQuestions(likertQuestions)
             fillSingleChoiceQuestions(singleChoiceQuestions.filterNot { it.id == "1" || it.id == "div1" })
             fillDemographicsRandomly(page)
+            ensureRequiredSingleChoicesAnswered(page, taskId, rowNumber)
 
             val targetDurationMillis = targetCompletionDurationMillis(request)
             waitUntilTargetDuration(startedAtMillis, targetDurationMillis)
@@ -492,7 +493,7 @@ class OneClickHighAlphaFiller(
                 "Screening detected: ${text.take(30)}... selecting a positive/first option.",
                 rowNumber
             )
-            val options = question.locator(".label[for], label, .option, .choice-item, .radio-item, .ui-radio, input[type='radio']")
+        val options = question.locator(".label[for], label, .option, .choice-item, .radio-item, .ui-radio, input[type='radio']")
             val optionCount = options.count()
             for (optionIndex in 0 until optionCount) {
                 val optionText = options.nth(optionIndex).textContent().orEmpty()
@@ -519,15 +520,16 @@ class OneClickHighAlphaFiller(
             }
         }
 
+        if (clickWjxRadioOption(root, zeroBased)) {
+            return
+        }
+
         val radios = root.locator("input[type='radio']")
         val radioCount = radios.count()
         if (radioCount > zeroBased) {
             val radio = radios.nth(zeroBased)
             runCatching {
-                radio.check(Locator.CheckOptions().setForce(true).setTimeout(5_000.0))
-            }.onSuccess { return }
-            runCatching {
-                radio.evaluate("element => element.click()")
+                checkRadioAndDispatchEvents(radio)
             }.onSuccess { return }
         }
 
@@ -551,6 +553,75 @@ class OneClickHighAlphaFiller(
         throw IllegalStateException("Failed to select option $oneBased.")
     }
 
+    private fun clickWjxRadioOption(root: Locator, zeroBased: Int): Boolean {
+        val radioItems = root.locator(".ui-radio")
+        if (radioItems.count() <= zeroBased) {
+            return false
+        }
+        val radioItem = radioItems.nth(zeroBased)
+        val clicked = listOf(
+            ".jqradio",
+            ".label[for]",
+            "a",
+            ".label"
+        ).any { selector ->
+            val target = radioItem.locator(selector).first()
+            target.count() > 0 && runCatching {
+                target.scrollIntoViewIfNeeded()
+                target.click(Locator.ClickOptions().setForce(true).setTimeout(5_000.0))
+            }.recoverCatching {
+                target.evaluate("element => element.click()")
+            }.isSuccess
+        }
+        if (!clicked) {
+            return runCatching {
+                radioItem.scrollIntoViewIfNeeded()
+                radioItem.click(Locator.ClickOptions().setForce(true).setTimeout(5_000.0))
+            }.recoverCatching {
+                radioItem.evaluate("element => element.click()")
+            }.isSuccess && commitWjxRadioState(root, zeroBased)
+        }
+        return commitWjxRadioState(root, zeroBased)
+    }
+
+    private fun commitWjxRadioState(root: Locator, zeroBased: Int): Boolean {
+        val radios = root.locator("input[type='radio']")
+        if (radios.count() <= zeroBased) {
+            return true
+        }
+        return runCatching {
+            checkRadioAndDispatchEvents(radios.nth(zeroBased))
+        }.isSuccess
+    }
+
+    private fun checkRadioAndDispatchEvents(radio: Locator) {
+        radio.evaluate(
+            """
+            element => {
+                element.checked = true;
+                element.setAttribute('checked', 'checked');
+                for (const type of ['mousedown', 'mouseup', 'click', 'input', 'change']) {
+                    element.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+                }
+                const option = element.closest('.ui-radio');
+                if (option) {
+                    option.classList.add('ui-radio-on');
+                    const anchor = option.querySelector('.jqradio');
+                    if (anchor) {
+                        anchor.classList.add('jqchecked');
+                    }
+                }
+                const id = element.getAttribute('id');
+                const label = id ? document.querySelector('.label[for="' + id + '"], label[for="' + id + '"]') : null;
+                if (label) {
+                    label.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                }
+                return element.checked;
+            }
+            """.trimIndent()
+        )
+    }
+
     private fun clickNthVisibleOption(root: Locator, selector: String, zeroBased: Int): Boolean {
         val options = root.locator(selector)
         val count = options.count()
@@ -571,6 +642,41 @@ class OneClickHighAlphaFiller(
             visibleIndex += 1
         }
         return false
+    }
+
+    private fun ensureRequiredSingleChoicesAnswered(page: Page, taskId: String, rowNumber: Int) {
+        val questions = page.locator(".field.ui-field-contain[topic][type='3']")
+        val count = questions.count()
+        for (index in 0 until count) {
+            val question = questions.nth(index)
+            if (!runCatching { question.isVisible }.getOrDefault(false)) {
+                continue
+            }
+            val answered = runCatching {
+                question.locator("input[type='radio']:checked").count() > 0
+            }.getOrDefault(false)
+            if (answered) {
+                recommitCheckedRadio(question)
+                continue
+            }
+            val topic = question.getAttribute("topic") ?: question.getAttribute("id") ?: (index + 1).toString()
+            taskStore.append(
+                taskId,
+                "warn",
+                "High-alpha row $rowNumber: single-choice question $topic was not committed; selecting first option again before submit.",
+                rowNumber
+            )
+            selectNthOption(question, 1)
+        }
+    }
+
+    private fun recommitCheckedRadio(question: Locator) {
+        val checked = question.locator("input[type='radio']:checked").first()
+        if (checked.count() > 0) {
+            runCatching {
+                checkRadioAndDispatchEvents(checked)
+            }
+        }
     }
 
     private suspend fun fillDemographicsRandomly(page: Page) {
